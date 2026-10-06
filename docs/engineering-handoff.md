@@ -10,6 +10,47 @@
 3. **不要捏造引擎理由。** Stockfish 給的是評估與變例；人類可讀的策略說明必須附可驗證的棋盤事實，並標示為規則式／推論。
 4. **不要默默擴大輸入範圍。** MVP 只有貼上 PGN；帳號登入、Chess.com API 與雲端功能必須另行批准。
 5. **變更要可驗證。** 每次功能改動至少跑 build；分析核心改動還要跑測試局。
+6. **`main` 不是工作分支。** 只放已驗證、可交付的整合版本；每個分工從 `main` 建立獨立 branch，驗證後才合併。
+
+## 1.1 Git 分支與整合規則
+
+### 分支命名
+
+```text
+feature/analysis-core       Stockfish 佇列、評估、測試
+feature/review-data         ReviewMove、WDL、失誤分類
+feature/interactive-board  棋盤、回放、走子清單、曲線互動
+feature/commentary         規則式策略旁白或本機 LLM 介面
+feature/pwa-packaging      離線快取、PWA、Tauri 包裝
+docs/<topic>               README、需求、交接手冊等文件
+fix/<topic>                已發現的缺陷修正
+```
+
+分支名稱應描述**分工結果**，不用人名或模型名。若一個需求同時修改多個領域，仍優先拆成可獨立驗證的分支，避免把分析核心、視覺設計與打包變更混在同一次提交。
+
+### 每項工作的流程
+
+```bash
+# 先同步已驗證的基線
+git switch main
+git pull --ff-only origin main
+
+# 為一項獨立分工開 branch
+git switch -c feature/<scope>
+
+# 實作、測試、提交後推送該 branch
+git push -u origin feature/<scope>
+```
+
+- `main` 禁止直接加入未完成特性、實驗、半成品 UI 或未驗證的依賴更新。
+- 一個 branch 一個清楚目的；若需求改變成另一項工作，先提交／暫存當前成果，再另開 branch。
+- 合併前必須重跑與風險相符的驗證，至少 `npm run build`；核心分析變更還需跑測試局。
+- 每個 branch 的交接回覆需說明基準 commit、修改範圍、驗證結果與未解風險。
+- 當多人或多模型同時作業時，避免在同一個 branch 上平行修改；使用不同 branch，並指定一個整合者處理衝突與合併。
+
+### 目前 branch 狀態
+
+`main` 是首次可建置基線。此文件的分支規則變更位於 `docs/git-workflow`，待驗證／確認後才併回 `main`。未來實作必須從乾淨、最新的 `main` 開出相應 feature branch。
 
 ## 2. 目前技術基線
 
