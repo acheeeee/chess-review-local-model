@@ -1,0 +1,21 @@
+# Dependencies and build output
+node_modules/
+dist/
+
+# Local editor and operating-system files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Personal game data: PGNs can contain account names and private games
+*.pgn
+
+# Local environment/configuration
+.env
+.env.*
+!.env.example
+
+# Test and tooling output
+coverage/
+*.log
