@@ -221,6 +221,8 @@ export function buildReviewMove({ move, best, after, pvLength = 6 }) {
     lossCp: loss,
     classification: classify(loss),
     whiteWinChance: whiteWinChance(afterEvaluation),
+    // Filled in by the optional second pass; null means "not re-analysed".
+    deep: null,
   };
   reviewMove.commentary = makeCommentary(reviewMove);
   return reviewMove;
@@ -229,6 +231,80 @@ export function buildReviewMove({ move, best, after, pvLength = 6 }) {
 /** Analysis state is keyed by ply so the UI can select unanalysed positions. */
 export function withReviewMove(analysisByPly, reviewMove) {
   return { ...analysisByPly, [reviewMove.ply]: reviewMove };
+}
+
+/**
+ * Analysis presets. A fixed depth costs very different amounts of thinking in
+ * quiet and sharp positions, so the deep modes spend extra *time* on the key
+ * moments instead of raising the depth everywhere.
+ */
+export const ANALYSIS_MODES = {
+  fast: { key: 'fast', label: '快速', depth: 10, keyMovetime: 0, multiPv: 1, keyLimit: 0 },
+  balanced: { key: 'balanced', label: '平衡', depth: 13, keyMovetime: 2500, multiPv: 3, keyLimit: 6 },
+  deep: { key: 'deep', label: '深入', depth: 16, keyMovetime: 6000, multiPv: 3, keyLimit: 14 },
+};
+
+export const KEY_MOMENT = { lossCp: 101, chanceSwing: 10 };
+
+/** How much the white expected score moved across this move. */
+export function chanceSwing(reviewMove) {
+  if (!reviewMove) return 0;
+  return Math.abs(reviewMove.whiteWinChance - whiteWinChance(reviewMove.best));
+}
+
+/**
+ * The moments worth re-analysing: real mistakes, or quiet-looking moves where
+ * the expected score still swung. Returned in play order so progress reporting
+ * is monotonic, but selected by severity.
+ */
+export function keyPlies(analysisByPly, { limit = 8 } = {}) {
+  if (limit <= 0) return [];
+  return analysedPlies(analysisByPly)
+    .map((ply) => analysisByPly[ply])
+    .filter((move) => (move.lossCp ?? 0) >= KEY_MOMENT.lossCp || chanceSwing(move) >= KEY_MOMENT.chanceSwing)
+    .sort((left, right) => (right.lossCp ?? 0) - (left.lossCp ?? 0) || chanceSwing(right) - chanceSwing(left))
+    .slice(0, limit)
+    .map((move) => move.ply)
+    .sort((left, right) => left - right);
+}
+
+/**
+ * Turns a MultiPV engine result for `beforeFen` into ranked candidate moves.
+ * Every line is normalised to the white perspective here, and `lossCp` is the
+ * mover's loss against the engine's own first choice.
+ */
+export function deepLines(move, result, { movetime = 0, pvLength = 8 } = {}) {
+  const raw = result.lines?.length ? result.lines : [{ ...result, multiPv: 1 }];
+  const ranked = raw
+    .filter((line) => line.pv?.length)
+    .map((line) => {
+      const evaluation = normalizeEvaluation(line, move.beforeFen);
+      const pv = replayPv(move.beforeFen, line.pv.slice(0, pvLength));
+      return {
+        rank: line.multiPv,
+        uci: line.pv[0],
+        san: pv.moves[0]?.san ?? moveFromUci(move.beforeFen, line.pv[0]),
+        depth: line.depth,
+        evaluation,
+        whiteWinChance: whiteWinChance(evaluation),
+        pv,
+      };
+    })
+    .sort((left, right) => left.rank - right.rank);
+  if (!ranked.length) return null;
+  const top = ranked[0].evaluation;
+  return {
+    movetime,
+    multiPv: ranked.length,
+    lines: ranked.map((line) => ({ ...line, lossCp: lossCp(top, line.evaluation, move.color) })),
+    // Did the move actually played survive as one of the engine's top choices?
+    playedRank: ranked.find((line) => line.uci === move.uci)?.rank ?? null,
+  };
+}
+
+export function withDeepLines(reviewMove, deep) {
+  if (!reviewMove || !deep) return reviewMove;
+  return { ...reviewMove, deep };
 }
 
 export function analysisAt(analysisByPly, ply) {

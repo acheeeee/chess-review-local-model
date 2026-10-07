@@ -1,18 +1,23 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  ANALYSIS_MODES,
   CLASSIFICATION_THRESHOLDS,
+  KEY_MOMENT,
   START_PLY,
   analysedPlies,
   analysisAt,
   buildReviewMove,
   chanceAtPly,
+  chanceSwing,
   chartPoints,
   clampPly,
   classify,
+  deepLines,
   evaluationAtPly,
   fenAtPly,
   formatEvaluation,
+  keyPlies,
   lossCp,
   materialBalance,
   moveAtPly,
@@ -23,6 +28,7 @@ import {
   summarize,
   terminalEvaluation,
   whiteWinChance,
+  withDeepLines,
   withReviewMove,
 } from '../src/review.js';
 
@@ -125,9 +131,10 @@ test('buildReviewMove exposes the full ReviewMove contract for a black blunder',
 
   assert.deepEqual(Object.keys(review).sort(), [
     'actual', 'afterFen', 'afterWhiteCp', 'beforeFen', 'best', 'bestSan', 'bestWhiteCp',
-    'classification', 'color', 'commentary', 'flags', 'fullmove', 'lossCp', 'ply', 'pv',
-    'san', 'uci', 'whiteWinChance',
+    'classification', 'color', 'commentary', 'deep', 'flags', 'fullmove', 'lossCp', 'ply',
+    'pv', 'san', 'uci', 'whiteWinChance',
   ]);
+  assert.equal(review.deep, null, 'the second pass has not run yet');
   assert.equal(review.ply, 4);
   assert.equal(review.fullmove, 2);
   assert.equal(review.san, 'Qf6');
@@ -277,6 +284,97 @@ test('selectPlyView derives board, label and evaluation for the single selected 
 
   assert.equal(selectPlyView(game, analysisByPly, 99).selectedPly, game.lastPly, 'selection is clamped to the game');
   assert.equal(selectPlyView(null, {}, 4).selectedPly, START_PLY);
+});
+
+test('analysis modes keep the deep settings in one place', () => {
+  assert.deepEqual(Object.keys(ANALYSIS_MODES), ['fast', 'balanced', 'deep']);
+  assert.equal(ANALYSIS_MODES.fast.keyLimit, 0, 'fast mode never runs a second pass');
+  assert.equal(ANALYSIS_MODES.fast.multiPv, 1);
+  assert.ok(ANALYSIS_MODES.deep.keyMovetime > ANALYSIS_MODES.balanced.keyMovetime, 'deep mode spends more time per key moment');
+  assert.ok(ANALYSIS_MODES.deep.keyLimit > ANALYSIS_MODES.balanced.keyLimit);
+  assert.ok(ANALYSIS_MODES.balanced.multiPv >= 2, 'a second pass needs alternatives to be useful');
+});
+
+test('key plies are the mistakes and the real swings, ordered by play order', () => {
+  const game = readPgn('1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 *');
+  // ply 1: quiet. ply 2: a blunder. ply 3: a swing without a big loss.
+  const quiet = buildReviewMove({
+    move: game.moves[0],
+    best: engineResult({ cp: 30, pv: ['e2e4'], bestMove: 'e2e4' }),
+    after: engineResult({ cp: -25 }),
+  });
+  const blunder = buildReviewMove({
+    move: game.moves[1],
+    best: engineResult({ cp: 25, pv: ['b8c6'], bestMove: 'b8c6' }),
+    after: engineResult({ cp: 500 }),
+  });
+  const swing = buildReviewMove({
+    move: game.moves[2],
+    best: engineResult({ cp: 520, wdl: [900, 90, 10], pv: ['f1b5'], bestMove: 'f1b5' }),
+    after: engineResult({ cp: -200, wdl: [120, 400, 480] }),
+  });
+  const analysisByPly = withReviewMove(withReviewMove(withReviewMove({}, quiet), blunder), swing);
+
+  assert.ok(blunder.lossCp >= KEY_MOMENT.lossCp, `the blunder qualifies on loss (${blunder.lossCp})`);
+  assert.ok(chanceSwing(swing) >= KEY_MOMENT.chanceSwing, `the swing qualifies on expected score (${chanceSwing(swing)})`);
+  assert.ok(chanceSwing(quiet) < KEY_MOMENT.chanceSwing);
+
+  assert.deepEqual(keyPlies(analysisByPly, { limit: 8 }), [2, 3], 'returned in play order');
+  assert.deepEqual(keyPlies(analysisByPly, { limit: 1 }), [2], 'the worst moment is kept when the budget is small');
+  assert.deepEqual(keyPlies(analysisByPly, { limit: 0 }), [], 'fast mode asks for nothing');
+  assert.deepEqual(keyPlies({}), []);
+});
+
+test('deepLines ranks MultiPV candidates in the mover perspective', () => {
+  const game = readPgn('1. e4 e5 2. Nf3 Qf6 *');
+  const blackMove = game.moves[3];
+  const deep = deepLines(blackMove, {
+    depth: 22,
+    cp: 120,
+    mate: null,
+    wdl: null,
+    pv: ['b8c6'],
+    bestMove: 'b8c6',
+    lines: [
+      // Scores are from Black's perspective here, because Black is to move.
+      { multiPv: 1, depth: 22, cp: 120, mate: null, wdl: null, pv: ['b8c6', 'f1b5'] },
+      { multiPv: 2, depth: 22, cp: 40, mate: null, wdl: null, pv: ['g8f6'] },
+      { multiPv: 3, depth: 22, cp: -200, mate: null, wdl: null, pv: ['d8f6'] },
+    ],
+  }, { movetime: 2500 });
+
+  assert.equal(deep.movetime, 2500);
+  assert.equal(deep.multiPv, 3);
+  assert.deepEqual(deep.lines.map((line) => line.san), ['Nc6', 'Nf6', 'Qf6']);
+  assert.deepEqual(deep.lines.map((line) => line.evaluation.score.value), [-120, -40, 200], 'white perspective: good for Black is negative');
+  assert.deepEqual(deep.lines.map((line) => line.lossCp), [0, 80, 320], 'loss is measured against the engine first choice, for the mover');
+  assert.equal(deep.playedRank, 3, 'the move actually played was the third candidate');
+  assert.deepEqual(deep.lines[0].pv.moves.map((entry) => entry.san), ['Nc6', 'Bb5']);
+  assert.ok(deep.lines[0].whiteWinChance < deep.lines[2].whiteWinChance, 'Black’s best line is worst for White');
+
+  const withDeep = withDeepLines(buildReviewMove({
+    move: blackMove,
+    best: engineResult({ cp: 120, pv: ['b8c6'], bestMove: 'b8c6' }),
+    after: engineResult({ cp: 200 }),
+  }), deep);
+  assert.equal(withDeep.deep.lines.length, 3);
+  assert.equal(withDeep.lossCp, 320, 'the first-pass numbers are not overwritten');
+  assert.equal(withDeepLines(null, deep), null);
+  assert.equal(withDeepLines(withDeep, null), withDeep);
+});
+
+test('deepLines falls back to a single line and skips unplayable candidates', () => {
+  const game = readPgn('1. e4 *');
+  const single = deepLines(game.moves[0], engineResult({ cp: 30, pv: ['e2e4', 'e7e5'], bestMove: 'e2e4' }));
+  assert.equal(single.multiPv, 1);
+  assert.equal(single.lines[0].san, 'e4');
+  assert.equal(single.playedRank, 1);
+
+  const broken = deepLines(game.moves[0], {
+    depth: 10, cp: 30, mate: null, wdl: null, pv: ['e2e4'], bestMove: 'e2e4',
+    lines: [{ multiPv: 1, depth: 10, cp: 30, mate: null, wdl: null, pv: [] }],
+  });
+  assert.equal(broken, null, 'a result without any replayable line produces no deep data');
 });
 
 test('summary aggregates per tone and per colour without mixing sides', () => {

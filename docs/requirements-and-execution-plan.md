@@ -166,7 +166,8 @@
 
 - [x] 規則式策略旁白完成於 `feature/commentary`：`src/facts.js` 提供可查證事實（攻守子數、鬆子、兵形、王前兵盾、中心控制、出子數），`src/commentary.js` 依優先序產生最多 3 句推論，每句附數字依據；UI 以獨立區塊標示「非引擎結論」。
 - [x] 大失誤可逐步預覽引擎主變例（完成於 `feature/interactive-board`）。
-- [ ] 深入模式尚未實作：關鍵點以較長 movetime／MultiPV 重跑、多條替代變例。
+- [x] 深入模式完成於 `feature/deep-analysis`：`ANALYSIS_MODES` 定義三檔預算，關鍵點（失誤以上或期望得分變動 ≥ 10 點）以 `go movetime` + MultiPV 重跑，UI 列出候選著、相對首選的失分與實戰著排名，每條候選線都能在棋盤上逐步預覽。
+- [ ] 時間預算與關鍵點門檻仍需實測校準（目前：平衡 2.5 秒×最多 6 點、深入 6 秒×最多 14 點）。
 - [ ] 可選的離線 LLM 介面（非 MVP）。
 
 工作：關鍵點重分析、MultiPV 變例、規則式策略訊號，以及可選的離線 LLM 介面（非 MVP 必要）。

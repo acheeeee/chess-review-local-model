@@ -81,21 +81,71 @@ export function variationLine(reviewMove) {
 }
 
 /**
- * Variation preview is an explicit second mode on top of `selectedPly`: index
- * `null` means "show the real game", a number means "show the engine line".
+ * All lines the user may preview for one move: after a deep re-analysis these
+ * are the MultiPV candidates, otherwise just the engine main line.
  */
-export function variationView(reviewMove, index) {
-  const line = variationLine(reviewMove);
-  if (!reviewMove || index === null || index === undefined || !line.length) return null;
-  const clamped = Math.max(0, Math.min(line.length - 1, index));
-  const step = line[clamped];
-  return { index: clamped, fen: step.fen, lastMoveUci: step.uci, san: step.san, line, isLast: clamped === line.length - 1 };
+export function candidateLines(reviewMove) {
+  if (!reviewMove) return [];
+  const deepLines = reviewMove.deep?.lines ?? [];
+  if (deepLines.length) {
+    return deepLines
+      .filter((line) => line.pv.moves.length)
+      .map((line) => ({
+        key: `deep-${line.rank}`,
+        rank: line.rank,
+        san: line.san,
+        evaluation: line.evaluation,
+        lossCp: line.lossCp,
+        depth: line.depth,
+        deep: true,
+        moves: line.pv.moves,
+        error: line.pv.error,
+      }));
+  }
+  if (!reviewMove.pv?.moves?.length) return [];
+  return [{
+    key: 'pv',
+    rank: 1,
+    san: reviewMove.bestSan,
+    evaluation: reviewMove.best,
+    lossCp: 0,
+    depth: reviewMove.best?.depth ?? null,
+    deep: false,
+    moves: reviewMove.pv.moves,
+    error: reviewMove.pv.error,
+  }];
+}
+
+/**
+ * Variation preview is an explicit second mode on top of `selectedPly`:
+ * `null` means "show the real game"; `{ key, step }` means "show step `step` of
+ * candidate line `key`".
+ */
+export function variationView(reviewMove, selection) {
+  const lines = candidateLines(reviewMove);
+  if (!reviewMove || !selection || !lines.length) return null;
+  const line = lines.find((candidate) => candidate.key === selection.key) ?? lines[0];
+  const step = Math.max(0, Math.min(line.moves.length - 1, selection.step ?? 0));
+  const entry = line.moves[step];
+  return {
+    key: line.key,
+    rank: line.rank,
+    step,
+    fen: entry.afterFen,
+    lastMoveUci: entry.uci,
+    san: entry.san,
+    lineSan: line.san,
+    evaluation: line.evaluation,
+    lines,
+    line,
+    isLast: step === line.moves.length - 1,
+  };
 }
 
 /** Board + highlights for the current selection, including variation preview. */
-export function interactiveBoard(game, analysisByPly, { selectedPly, orientation = 'w', variationIndex = null }) {
+export function interactiveBoard(game, analysisByPly, { selectedPly, orientation = 'w', variation: selection = null }) {
   const analysis = analysisAt(analysisByPly, selectedPly);
-  const variation = variationView(analysis, variationIndex);
+  const variation = variationView(analysis, selection);
   if (variation) {
     // In preview mode the highlighted squares belong to the engine line, which
     // is why the UI must label this board as a variation, not as the game.

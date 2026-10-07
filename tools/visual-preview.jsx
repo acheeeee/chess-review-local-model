@@ -7,10 +7,11 @@
  * real person. Output: `preview/review-ui.html` (git-ignored).
  */
 import { renderToString } from 'react-dom/server';
+import { Chess } from 'chess.js';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { Board, Chart, EvaluationBar, MoveCell } from '../src/App.jsx';
-import { interactiveBoard, moveRows } from '../src/navigation.js';
-import { buildReviewMove, chartPoints, plyLabel, readPgn, summarize, withReviewMove } from '../src/review.js';
+import { candidateLines, interactiveBoard, moveRows } from '../src/navigation.js';
+import { buildReviewMove, chartPoints, deepLines, formatEvaluation, plyLabel, readPgn, summarize, withDeepLines, withReviewMove } from '../src/review.js';
 
 const PGN = `[White "Anna"]
 [Black "Bo"]
@@ -39,8 +40,32 @@ game.moves.forEach((move, index) => {
   }));
 });
 
-const played = interactiveBoard(game, analysisByPly, { selectedPly: SELECTED_PLY, orientation: 'w', variationIndex: null });
-const preview = interactiveBoard(game, analysisByPly, { selectedPly: SELECTED_PLY, orientation: 'b', variationIndex: 0 });
+// Pretend the second pass ran on the selected key moment, with three candidates.
+const keyMove = game.moves[SELECTED_PLY - 1];
+const keySign = keyMove.color === 'w' ? 1 : -1;
+const legalFrom = (fen) => new Chess(fen).moves({ verbose: true });
+const alternatives = legalFrom(keyMove.beforeFen)
+  .filter((option) => option.lan !== keyMove.uci)
+  .slice(0, 2)
+  // Engine scores are from the mover's perspective, so a worse candidate is a
+  // lower number regardless of colour.
+  .map((option, index) => ({ multiPv: index + 2, depth: 24, cp: WHITE_CP[SELECTED_PLY - 1] * keySign - 60 * (index + 1), mate: null, wdl: null, pv: [option.lan] }));
+const deep = deepLines(keyMove, {
+  depth: 24,
+  cp: WHITE_CP[SELECTED_PLY - 1] * keySign,
+  mate: null,
+  wdl: null,
+  pv: [keyMove.uci],
+  bestMove: keyMove.uci,
+  lines: [
+    { multiPv: 1, depth: 24, cp: WHITE_CP[SELECTED_PLY - 1] * keySign, mate: null, wdl: null, pv: [keyMove.uci, game.moves[SELECTED_PLY]?.uci].filter(Boolean) },
+    ...alternatives,
+  ],
+}, { movetime: 6000 });
+analysisByPly = { ...analysisByPly, [SELECTED_PLY]: withDeepLines(analysisByPly[SELECTED_PLY], deep) };
+
+const played = interactiveBoard(game, analysisByPly, { selectedPly: SELECTED_PLY, orientation: 'w', variation: null });
+const preview = interactiveBoard(game, analysisByPly, { selectedPly: SELECTED_PLY, orientation: 'b', variation: { key: 'deep-2', step: 0 } });
 const current = analysisByPly[SELECTED_PLY];
 const summary = summarize(analysisByPly);
 const rows = moveRows(game, analysisByPly);
@@ -72,7 +97,19 @@ const html = renderToString(<main>
           <p className="inferred-title">規則式推論（非引擎結論）</p>
           <ul className="commentary inferred">{current.commentary.inferred.map((line) => <li key={line}>{line}</li>)}</ul>
         </div>}
-        <div className="best-line"><span>引擎建議</span><b>{current.bestSan}</b><div className="pv">{current.pv.moves.map((move, index) => <button key={`${move.uci}-${index}`} className={index === 0 ? 'active' : ''}>{move.san}</button>)}</div></div>
+        <div className="lines">
+          <div className="lines-head">
+            <span>{`引擎候選著（關鍵點重分析，${(current.deep.movetime / 1000).toFixed(1)} 秒／MultiPV ${current.deep.multiPv}）`}</span>
+            <small>{current.deep.playedRank ? `實戰著是引擎第 ${current.deep.playedRank} 選擇` : '實戰著不在引擎候選名單內'}</small>
+          </div>
+          {candidateLines(current).map((line) => <div className={`line ${line.key === 'deep-2' ? 'active' : ''}`} key={line.key}>
+            <span className="line-rank">#{line.rank}</span>
+            <b className="line-move">{line.san}</b>
+            <span className="line-eval">{formatEvaluation(line.evaluation)}</span>
+            {line.lossCp > 0 && <span className="line-loss">−{(line.lossCp / 100).toFixed(2)}</span>}
+            <div className="pv">{line.moves.map((move, index) => <button key={`${line.key}-${index}`} className={line.key === 'deep-2' && index === 0 ? 'active' : ''}>{move.san}</button>)}</div>
+          </div>)}
+        </div>
         <p className="honesty">上半部是引擎評估與可在棋盤上查證的事實；「規則式推論」由固定規則依子力、王安全、兵形與中心控制產生，附上判斷依據，不是引擎或語言模型的結論。</p>
       </article>
     </div>
