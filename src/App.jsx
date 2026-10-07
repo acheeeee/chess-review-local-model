@@ -230,7 +230,10 @@ export default function App() {
         {current ? <article className="insight">
           <div className="move-head"><span className={`badge ${current.classification.tone}`}>{current.classification.label}</span><h3>{plyLabel(game, current.ply)}</h3><strong>{formatEvaluation(current.actual)}</strong></div>
           <ul className="commentary">{current.commentary.confirmed.map((line) => <li key={line}>{line}</li>)}</ul>
-          {current.commentary.inferred.length > 0 && <ul className="commentary inferred">{current.commentary.inferred.map((line) => <li key={line}>{line}（推論）</li>)}</ul>}
+          {current.commentary.inferred.length > 0 && <div className="inferred-block">
+            <p className="inferred-title">規則式推論（非引擎結論）</p>
+            <ul className="commentary inferred">{current.commentary.inferred.map((line) => <li key={line}>{line}</li>)}</ul>
+          </div>}
           <div className="best-line">
             <span>引擎建議</span>
             <b>{current.bestSan}</b>
@@ -245,7 +248,7 @@ export default function App() {
             </div>
           </div>
           {current.pv.error && <p className="error">{current.pv.error}</p>}
-          <p className="honesty">講評僅陳述引擎評估與可驗證的盤面事實；策略性推論尚未啟用。</p>
+          <p className="honesty">上半部是引擎評估與可在棋盤上查證的事實；「規則式推論」由固定規則依子力、王安全、兵形與中心控制產生，附上判斷依據，不是引擎或語言模型的結論。</p>
         </article> : <article className="insight">
           {plyView.isStart && plyView.evaluation ? <>
             <div className="move-head"><span className="badge pending">起始</span><h3>{plyView.label}</h3><strong>{formatEvaluation(plyView.evaluation)}</strong></div>

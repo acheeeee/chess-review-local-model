@@ -1,4 +1,8 @@
 import { Chess } from 'chess.js';
+import { inferredSignals, pvSignals } from './commentary.js';
+import { materialBalance } from './facts.js';
+
+export { materialBalance };
 
 export const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
@@ -26,8 +30,6 @@ export const CLASSIFICATION_THRESHOLDS = [
   { maxLossCp: 250, label: '失誤', tone: 'mistake' },
   { maxLossCp: Infinity, label: '大失誤', tone: 'blunder' },
 ];
-
-const PIECE_VALUES = { p: 1, n: 3, b: 3, r: 5, q: 9 };
 
 export function readPgn(pgn) {
   const game = new Chess();
@@ -164,15 +166,6 @@ export function classify(loss) {
   return { label: band.label, tone: band.tone };
 }
 
-/** White minus black material in pawn units; only a board fact, not an evaluation. */
-export function materialBalance(fen) {
-  return new Chess(fen).board().flat().reduce((total, piece) => {
-    if (!piece || piece.type === 'k') return total;
-    const value = PIECE_VALUES[piece.type] ?? 0;
-    return total + (piece.color === 'w' ? value : -value);
-  }, 0);
-}
-
 /**
  * Commentary separates engine/board facts from interpretation. Rule-based
  * strategy text belongs in `inferred` and must never be presented as a
@@ -192,7 +185,8 @@ export function makeCommentary(move) {
   if (move.actual.terminal === 'checkmate') confirmed.push('此著將死對方，棋局結束。');
   else if (move.actual.terminal === 'draw') confirmed.push('此著後局面依規則判和。');
   else if (new Chess(move.afterFen).isCheck()) confirmed.push('此著對對方國王將軍。');
-  return { confirmed, inferred: [] };
+  confirmed.push(...pvSignals(move));
+  return { confirmed, inferred: inferredSignals(move) };
 }
 
 function toEvaluation(result, fen) {

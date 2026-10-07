@@ -21,7 +21,7 @@ const PGN = `[White "Anna"]
 // White-perspective centipawns before each move, chosen so the preview shows
 // every classification colour (best → blunder) in one screen.
 const WHITE_CP = [30, 25, 35, 30, 60, 50, 70, 40, 90, 40, 95, 60, 90, 40, 320, 300, 330, 60, 220, 300, 340];
-const SELECTED_PLY = 14;
+const SELECTED_PLY = 12;
 
 const game = readPgn(PGN);
 const engineResult = (cp, pv, bestMove) => ({ depth: 13, cp, mate: null, wdl: null, pv, bestMove });
@@ -68,8 +68,12 @@ const html = renderToString(<main>
       <article className="insight">
         <div className="move-head"><span className={`badge ${current.classification.tone}`}>{current.classification.label}</span><h3>{plyLabel(game, SELECTED_PLY)}</h3><strong>{current.afterWhiteCp === null ? '—' : `${current.afterWhiteCp >= 0 ? '+' : ''}${(current.afterWhiteCp / 100).toFixed(2)}`}</strong></div>
         <ul className="commentary">{current.commentary.confirmed.map((line) => <li key={line}>{line}</li>)}</ul>
+        {current.commentary.inferred.length > 0 && <div className="inferred-block">
+          <p className="inferred-title">規則式推論（非引擎結論）</p>
+          <ul className="commentary inferred">{current.commentary.inferred.map((line) => <li key={line}>{line}</li>)}</ul>
+        </div>}
         <div className="best-line"><span>引擎建議</span><b>{current.bestSan}</b><div className="pv">{current.pv.moves.map((move, index) => <button key={`${move.uci}-${index}`} className={index === 0 ? 'active' : ''}>{move.san}</button>)}</div></div>
-        <p className="honesty">講評僅陳述引擎評估與可驗證的盤面事實；策略性推論尚未啟用。</p>
+        <p className="honesty">上半部是引擎評估與可在棋盤上查證的事實；「規則式推論」由固定規則依子力、王安全、兵形與中心控制產生，附上判斷依據，不是引擎或語言模型的結論。</p>
       </article>
     </div>
   </section>

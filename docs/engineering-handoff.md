@@ -61,6 +61,8 @@ git push -u origin feature/<scope>
 | `src/App.jsx` | 頁面狀態（`game` / `analysisByPly` / `selectedPly` / `variationIndex` / `orientation` / `playing`）、PGN 輸入、分析流程、結果呈現 |
 | `src/engine.js` | Web Worker 中 Stockfish 的 UCI 訊息佇列 |
 | `src/review.js` | PGN、`ReviewMove` 契約、ply 索引、評估、分類、摘要與講評的純函式 |
+| `src/facts.js` | 可驗證的盤面事實：子力差、攻守子數、鬆子、兵形、王前兵盾、中心控制、出子數 |
+| `src/commentary.js` | 規則式策略旁白（`inferred`）與主變例事實（`pvSignals`） |
 | `src/navigation.js` | 棋盤格子推導、前後步、走子清單列、變例預覽的純函式 |
 | `src/pieces.jsx` | 本專案原創的 SVG 棋子圖示（無第三方素材、無網路請求） |
 | `src/styles.css` | 介面樣式 |
@@ -70,6 +72,7 @@ git push -u origin feature/<scope>
 | `test/engine.test.js` | Fake Worker 下的 UCI queue、cp 0、MultiPV 與取消測試 |
 | `test/review.test.js` | 評分視角、WDL、終局、PGN、分類邊界、ply 0 契約、`analysisByPly` 與棋規邊界測試 |
 | `test/navigation.test.js` | 棋盤格色／翻轉／高亮、步進邊界、走子清單配對、變例預覽測試 |
+| `test/commentary.test.js` | 盤面事實（攻守子數、鬆子、兵形、王盾、中心、出子）與規則式旁白的證據測試 |
 
 已整合的 `feature/analysis-core`：單 Worker FIFO queue、AbortSignal 取消、Worker 錯誤重置、將殺／逼和的明確表示，以及 `npm test` 基礎測試。
 
@@ -213,6 +216,21 @@ Stockfish 的 `score cp`／`score mate`／`wdl` 是**該 FEN 輪到走的一方�
 - 推論：`這也讓黑方更容易在后翼建立通兵。`
 - 不可宣稱：`你忽略了長期計畫`（除非有具體證據與明確定義）。
 
+### 目前實作（`feature/commentary`）
+
+`makeCommentary()` 產生兩組句子，UI 分區顯示且推論區塊標明「非引擎結論」：
+
+- `confirmed`：實戰著與走後評估、引擎首選與差距（兵）、子力差變化、將軍／將死／判和，以及 `pvSignals()` 從主變例本身讀出的事實（主變例以吃子開頭、幾步內將死）。
+- `inferred`：`inferredSignals()` 的規則式判讀，依優先序最多 3 句，每句都必須帶出處數字：
+  1. 落點安全：剛走到的子被 N 攻 M 守。
+  2. 新增鬆子：某格由 N 攻 M 守變成戰術目標。
+  3. 王安全：失去易位權、王前兵數減少、王所在列已無自己的兵。
+  4. 兵形：新增疊兵／孤兵／通兵（附列名或格位與前後數量）。
+  5. 機會：對手某子目前 N 攻 M 守。
+  6. 空間：中心四格控制值變化 ≥ 2；開局（ply ≤ 20）多出動一個子。
+
+規則來源全部在 `src/facts.js`，每個事實函式都有單元測試。新增規則時：必須能用盤面查證、必須在句子裡寫出數字、不得引用引擎沒有輸出的內容；已將死的局面不產生任何推論。
+
 若日後加入 Ollama 等本地 LLM，必須是「可選後處理」；引擎評分、最佳著和核心功能仍須在沒有 LLM 時運作。
 
 ## 7. UI 狀態模型
@@ -241,8 +259,9 @@ settings       深度／時間、使用者執子顏色（未來）
 4. [完成於 `feature/review-data`] `GameMove`／`ParsedGame` 統一為 `beforeFen`／`afterFen`，PV 逐手重播成 SAN。
 5. [完成於 `feature/review-data`] `App.jsx` 已改為 `ParsedGame + analysisByPly + selectedPly`（`selectedPly = 0` 為初始局面）；集中化 `CLASSIFICATION_THRESHOLDS`，加入 `summarize()` 全局摘要與 `confirmed`／`inferred` 分離的 `commentary`。
 6. [完成於 `feature/interactive-board`] 原創 SVG 棋子、`boardView`／`interactiveBoard` 推導、走子清單配對、前後步＋播放＋鍵盤、曲線點跳轉、主變例逐步預覽，全部共用 `selectedPly`；新增 `npm run preview:ui` 視覺檢查。
-7. **下一步：**`feature/commentary`——用 `src/navigation.js`／`review.js` 已有的盤面事實產生規則式策略訊號，寫進 `commentary.inferred` 並標示為推論；同時評估需求文件 §7 的「關鍵點以較長時間／MultiPV 重跑」。
-8. 最後才做 `feature/pwa-packaging`（離線快取、PWA、可選 Tauri）與 GitHub Actions。
+7. [完成於 `feature/commentary`] `src/facts.js` 盤面事實 + `src/commentary.js` 規則式推論，寫入 `commentary.inferred` 並在 UI 標示為非引擎結論。
+8. **下一步：**需求文件 §7 的「深入模式」——在 `feature/analysis-core` 系列分支擴充引擎層：關鍵點（大失誤／評估劇變）以較長 movetime 或 MultiPV 重跑，並讓 `parseInfo` 收集 multipv > 1 的候選著。
+9. 最後才做 `feature/pwa-packaging`（離線快取、PWA、可選 Tauri）與 GitHub Actions。
 
 每一步完成時，更新本手冊的「目前技術基線」和需求文件對應 phase checkbox，並在回覆中列出執行過的驗證命令與結果。
 
@@ -250,12 +269,12 @@ settings       深度／時間、使用者執子顏色（未來）
 
 ```md
 ## 交接摘要
-- 完成：`main` 已有可取消的本機 Stockfish 分析核心與完整 `ReviewMove` 資料契約；`feature/interactive-board` 完成 Chess.com 式互動檢討介面：原創 SVG 棋子、實戰著高亮、棋盤翻轉、⏮◀▶⏭ 與自動播放、鍵盤 ←／→／Home／End、曲線節點跳轉、白黑配對走子清單（未分析的手也可點）、主變例逐步預覽與「回到實戰」。
-- 未完成：策略旁白（`commentary.inferred` 仍為空）、關鍵點重分析與 MultiPV、PWA／離線快取／Tauri、GitHub Actions、IndexedDB 保存（目前刻意不存）。
-- 目前 branch：`feature/interactive-board`（已可驗證，待合併）。
-- 最近一次驗證：`npm test`（24 passed / 0 failed）、`npm run build`、`npm run preview:ui` 並以 1240px 與 500px 寬實際檢視畫面；接手前務必重跑。
-- 已知限制：深度仍是固定 depth 選項，未實作需求 §7 的關鍵點時間分配；「勝率」是 WDL 期望得分（UI 已標示）；變例預覽只走主變例，沒有多變例比較；棋子為自繪 SVG，風格比商業棋盤樸素。
-- 下一步（唯一最高優先）：合併 `feature/interactive-board` 後開 `feature/commentary`，以可驗證的盤面事實產生規則式策略旁白，寫入 `commentary.inferred` 並標示為推論。
+- 完成：`main` 已有可取消的本機 Stockfish 分析核心、完整 `ReviewMove` 資料契約，以及 Chess.com 式互動檢討介面（原創 SVG 棋子、高亮、翻轉、回放、鍵盤、曲線跳轉、走子清單、主變例預覽）。`feature/commentary` 新增 `src/facts.js`（可查證盤面事實）與 `src/commentary.js`（規則式推論最多 3 句、每句附數字依據），UI 以獨立區塊標示「規則式推論（非引擎結論）」。
+- 未完成：需求 §7 的深入模式（關鍵點以較長 movetime／MultiPV 重跑）、MultiPV 解析、PWA／離線快取／Tauri、GitHub Actions、IndexedDB 保存（目前刻意不存）、本機 LLM 後處理（可選、非 MVP）。
+- 目前 branch：`feature/commentary`（已可驗證，待合併）。
+- 最近一次驗證：`npm test`（34 passed / 0 failed）、`npm run build`、`npm run preview:ui` 並實際檢視旁白區塊與棋盤；接手前務必重跑。
+- 已知限制：規則式推論只看單一局面的靜態特徵，沒有做 SEE 或戰術搜尋，可能漏掉需要算變化才看得出的威脅（因此句子一律標為推論並附數字）；深度仍是固定 depth 選項；變例只有主變例。
+- 下一步（唯一最高優先）：合併 `feature/commentary` 後，依需求 §7 實作深入模式——對大失誤與評估劇變的 ply 以較長思考時間／MultiPV 重分析，並在 UI 呈現多條替代變例。
 ```
 
 ## 9. GitHub 準備清單

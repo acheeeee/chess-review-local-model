@@ -141,7 +141,7 @@ test('buildReviewMove exposes the full ReviewMove contract for a black blunder',
   assert.equal(review.pv.error, null);
   assert.ok(review.commentary.confirmed.some((line) => line.includes('黑方實戰下 Qf6')));
   assert.ok(review.commentary.confirmed.some((line) => line.includes('引擎首選 Nc6')));
-  assert.deepEqual(review.commentary.inferred, [], 'rule-based strategy text is not invented yet');
+  assert.deepEqual(review.commentary.inferred, [], 'no rule has evidence for this move, so nothing is invented');
 });
 
 test('a white move that keeps the engine top choice is not penalised', () => {
