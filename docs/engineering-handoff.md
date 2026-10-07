@@ -50,7 +50,7 @@ git push -u origin feature/<scope>
 
 ### 目前 branch 狀態
 
-`main` 是首次可建置基線。此文件的分支規則變更位於 `docs/git-workflow`，待驗證／確認後才併回 `main`。未來實作必須從乾淨、最新的 `main` 開出相應 feature branch。
+`main` 是首次可建置基線。分支規則已合併至 `main`；目前正在 `feature/analysis-core` 實作第一階段。未來實作必須從乾淨、最新的 `main` 開出相應 feature branch。
 
 ## 2. 目前技術基線
 
@@ -64,20 +64,23 @@ git push -u origin feature/<scope>
 | `src/styles.css` | 介面樣式 |
 | `vite.config.js` | 開發／打包時供應 Stockfish JS + WASM 檔案 |
 | `docs/requirements-and-execution-plan.md` | 已確認需求、非目標與 phases |
+| `test/engine.test.js` | Fake Worker 下的 UCI queue、cp 0、MultiPV 與取消測試 |
+| `test/review.test.js` | 評分視角、WDL、終局、PGN 與分類邊界測試 |
 
-重要：目前 UI 是概念雛形，不得因為能顯示畫面就視為可交付產品。依 Phase 1–2 優先完成引擎佇列、評分資料模型與測試，再擴展介面。
+`feature/analysis-core` 已完成但尚未合併的工作：單 Worker FIFO queue、AbortSignal 取消、Worker 錯誤重置、將殺／逼和的明確表示，以及 `npm test` 基礎測試。重要：目前 UI 仍是概念雛形，不得因為能顯示畫面就視為可交付產品。下一步是以獨立 `feature/review-data` 統一 `ReviewMove`，再擴展介面。
 
 ## 3. 啟動、建置與品質檢查
 
 ```bash
 npm install
 npm run dev
+npm test
 npm run build
 npm run preview
 ```
 
 - 開發模式應使用 `http://localhost`；直接雙擊 `index.html` 不會正確載入 Worker／WASM。
-- `npm run build` 必須將 lite single-thread Stockfish JS 與 WASM 一併輸出。
+- `npm test` 是最低限度的核心回歸測試；`npm run build` 必須將 lite single-thread Stockfish JS 與 WASM 一併輸出。
 - 不應以 CDN 載入引擎、字型或核心功能依賴。若保留外部字型，必須有本機系統字型 fallback；正式離線版應移除外部字型請求。
 - 不要提交 `node_modules`、`dist`、使用者 PGN 或含個資的螢幕截圖。
 
@@ -137,14 +140,16 @@ type ReviewMove = {
 
 ### 視角規則（絕不可違反）
 
-Stockfish 的 `score cp` 是**白方視角**。設 `B` 是實戰前的最佳白方分數，`A` 是實戰後白方分數：
+Stockfish 的 `score cp`／`score mate`／`wdl` 是**該 FEN 輪到走的一方的視角**，不是固定白方視角。每筆引擎結果都必須先依 FEN turn 正規化：白方待走保留；黑方待走時反轉 cp／mate 符號，並將 WDL 的 win、loss 互換。UI 的「白方勝率」採 WDL 期望得分 `(win + draw / 2) / total`；這比純 win 機率更符合含大量和局的棋局檢討曲線。
+
+正規化後，設 `B` 是實戰前的最佳白方分數，`A` 是實戰後白方分數：
 
 ```text
 白方走：loss = max(0, B - A)
 黑方走：loss = max(0, A - B)
 ```
 
-分析 `afterFen` 時輪到對手走，但評分仍是白方視角，因此不需再因 side-to-move 翻轉。
+分析 `afterFen` 時輪到對手走；必須先在 `afterFen` 做上述正規化，再套用走子者的 loss 公式。mate 以獨立 `score.kind === 'mate'` 呈現 `#N`／`-#N`，不可在 UI 把內部比較用的數值顯示為幾百兵。
 
 ### 棋規邊界測試清單
 
@@ -192,14 +197,12 @@ settings       深度／時間、使用者執子顏色（未來）
 
 ## 8. 建議的下一位模型工作順序
 
-1. 讀本文件與需求文件，執行 `npm run build`，先確認基線。
-2. 檢查現有分析呼叫是否會重入。若有並行 `go`，先改為可靠 queue。
-3. 加入 Vitest（或等效工具）及上述棋規邊界測試。
-4. 把資料欄位明確化為 `ReviewMove`，統一命名為 `beforeFen`／`afterFen`。
-5. 加入 run cancellation 與 UI 取消按鈕。
-6. 實作 WDL 優先的勝率轉換與將殺顯示。
-7. 完成互動棋盤、走子清單與曲線共同使用 `selectedPly`。
-8. 最後才加策略旁白、PWA 和 Tauri。
+1. 讀本文件與需求文件，執行 `npm test && npm run build`，先確認基線。
+2. [完成於 `feature/analysis-core`] 單一 UCI Worker 的 FIFO queue、取消、run ID 與錯誤復原。
+3. [完成基礎版] `node:test` 針對 engine／review pure functions；後續分支需補齊棋規 fixtures。
+4. **下一步：**把資料欄位明確化為 `ReviewMove`，統一命名為 `beforeFen`／`afterFen`，並將 PV 逐手重播成 SAN。
+5. 以此資料模型完成互動棋盤、走子清單與曲線共同使用的 `selectedPly`。
+6. 最後才加策略旁白、PWA 和 Tauri。
 
 每一步完成時，更新本手冊的「目前技術基線」和需求文件對應 phase checkbox，並在回覆中列出執行過的驗證命令與結果。
 
