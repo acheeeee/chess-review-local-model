@@ -50,7 +50,7 @@ git push -u origin feature/<scope>
 
 ### 目前 branch 狀態
 
-`main` 是首次可建置基線。分支規則已合併至 `main`；目前正在 `feature/analysis-core` 實作第一階段。未來實作必須從乾淨、最新的 `main` 開出相應 feature branch。
+`main` 是最新已整合基線。`feature/analysis-core` 已於 `d33975b` 合併；目前工作斷點是 `feature/review-data`。該分支已將 PGN 走子標準化為 `GameMove`（`beforeFen`／`afterFen`）並讓引擎 PV 逐手重播成 SAN，但尚未合併。未來實作必須從乾淨、最新的 `main` 開出相應 feature branch。
 
 ## 2. 目前技術基線
 
@@ -58,16 +58,31 @@ git push -u origin feature/<scope>
 
 | 位置 | 用途 |
 | --- | --- |
-| `src/App.jsx` | 頁面狀態、PGN 輸入、分析流程、結果呈現 |
+| `src/App.jsx` | 頁面狀態（`game` / `analysisByPly` / `selectedPly`）、PGN 輸入、分析流程、結果呈現 |
 | `src/engine.js` | Web Worker 中 Stockfish 的 UCI 訊息佇列 |
-| `src/review.js` | PGN、評估、分類與講評的純函式 |
+| `src/review.js` | PGN、`ReviewMove` 契約、ply 索引、評估、分類、摘要與講評的純函式 |
 | `src/styles.css` | 介面樣式 |
 | `vite.config.js` | 開發／打包時供應 Stockfish JS + WASM 檔案 |
 | `docs/requirements-and-execution-plan.md` | 已確認需求、非目標與 phases |
 | `test/engine.test.js` | Fake Worker 下的 UCI queue、cp 0、MultiPV 與取消測試 |
-| `test/review.test.js` | 評分視角、WDL、終局、PGN 與分類邊界測試 |
+| `test/review.test.js` | 評分視角、WDL、終局、PGN、分類邊界、ply 0 契約、`analysisByPly` 與棋規邊界測試 |
 
-`feature/analysis-core` 已完成但尚未合併的工作：單 Worker FIFO queue、AbortSignal 取消、Worker 錯誤重置、將殺／逼和的明確表示，以及 `npm test` 基礎測試。重要：目前 UI 仍是概念雛形，不得因為能顯示畫面就視為可交付產品。下一步是以獨立 `feature/review-data` 統一 `ReviewMove`，再擴展介面。
+已整合的 `feature/analysis-core`：單 Worker FIFO queue、AbortSignal 取消、Worker 錯誤重置、將殺／逼和的明確表示，以及 `npm test` 基礎測試。
+
+`feature/review-data` 目前狀態（尚未合併）：
+
+- `readPgn()` 輸出 `ParsedGame` = `{ headers, initialFen, moves, lastPly }`；`moves` 是含 `ply`、真實 `fullmove`、`beforeFen`、`afterFen`、`flags` 的 `GameMove`。
+- `buildReviewMove({ move, best, after })` 是唯一產生 `ReviewMove` 的地方，輸出 §5 契約欄位（含 `bestWhiteCp`／`afterWhiteCp`／`lossCp`／`classification`／`whiteWinChance`／`commentary`）。`after` 可直接收 `terminalEvaluation()` 結果，終局不會被捏造成 cp 值；mate 時 `afterWhiteCp` 為 `null`。
+- 分析狀態是以 ply 為 key 的物件（`withReviewMove`／`analysisAt`／`analysedPlies`），不是陣列；未分析的 ply 仍可選取且索引不位移。
+- `selectedPly = 0` 是「第 1 手之前」的局面契約：`fenAtPly()` 回傳 `initialFen`（支援 `[SetUp]`／`[FEN]` 起始局面），`chanceAtPly(_, 0)` 取 ply 1 的 `best` 評估，`plyLabel(_, 0)` 為「初始局面」。
+- `selectPlyView(game, analysisByPly, ply)` 是 UI 推導當前局面的唯一入口（clamp 後的 `selectedPly`、`fen`、`move`、`label`、`analysis`、`evaluation`、`whiteWinChance`、`isStart`／`isLast`）。元件不得自行保存棋盤位置。
+- 失誤門檻集中在 `CLASSIFICATION_THRESHOLDS`，`classify()` 查該表；元件不得自訂 cutoff。
+- `summarize()` 提供全局摘要：各分類計數、白／黑分開的平均失分與最嚴重一手。
+- `chartPoints()` 從 ply 0 連續輸出到第一個尚未分析的 ply，曲線不跳號。
+- `makeCommentary()` 把講評拆成 `confirmed`（引擎數值與盤面事實：子力差變化、將軍、終局）與 `inferred`（目前刻意留空），避免把規則式推論當成引擎結論。
+- `replayPv()` 仍將 UCI 主變例逐著轉 SAN 並保留每一步 FEN。
+
+重要：目前 UI 仍是概念雛形，不得因為能顯示畫面就視為可交付產品。互動棋盤、回放與變例檢視尚未實作。
 
 ## 3. 啟動、建置與品質檢查
 
@@ -116,27 +131,32 @@ new Worker
 
 ## 5. 棋局資料與評估不變量
 
-### 建議的 `ReviewMove` 欄位
+### `ReviewMove` 欄位（`buildReviewMove()` 的實際輸出）
 
 ```ts
 type ReviewMove = {
-  ply: number;                 // 1 起算的半回合
+  ply: number;                 // 1 起算的半回合；ply 0 保留給初始局面
   fullmove: number;
   color: 'w' | 'b';
   san: string;
   uci: string;
+  flags: string;               // chess.js 旗標（易位、en passant、升變…）
   beforeFen: string;
   afterFen: string;
-  best: EngineResult;          // 分析 beforeFen
-  actual: EngineResult;        // 分析 afterFen
-  bestWhiteCp: number | null;
+  best: Evaluation;            // beforeFen 的分析，已正規化為白方視角
+  actual: Evaluation;          // afterFen 的分析或 terminalEvaluation()
+  bestWhiteCp: number | null;  // mate 時為 null，不可偽裝成兵值
   afterWhiteCp: number | null;
+  bestSan: string;             // 引擎 bestmove 在 beforeFen 重播後的 SAN
+  pv: { moves: PvMove[]; error: string | null };
   lossCp: number | null;       // 一律為走子方的非負損失
-  classification: Classification;
+  classification: { label: string; tone: Tone };
   whiteWinChance: number | null;
-  commentary: Commentary;
+  commentary: { confirmed: string[]; inferred: string[] };
 };
 ```
+
+`analysisByPly` 是 `Record<ply, ReviewMove>`；ply 0 沒有 `ReviewMove`，其評估由 `chanceAtPly()`／`evaluationAtPly()` 取 ply 1 的 `best`。
 
 ### 視角規則（絕不可違反）
 
@@ -199,12 +219,25 @@ settings       深度／時間、使用者執子顏色（未來）
 
 1. 讀本文件與需求文件，執行 `npm test && npm run build`，先確認基線。
 2. [完成於 `feature/analysis-core`] 單一 UCI Worker 的 FIFO queue、取消、run ID 與錯誤復原。
-3. [完成基礎版] `node:test` 針對 engine／review pure functions；後續分支需補齊棋規 fixtures。
-4. **下一步：**把資料欄位明確化為 `ReviewMove`，統一命名為 `beforeFen`／`afterFen`，並將 PV 逐手重播成 SAN。
-5. 以此資料模型完成互動棋盤、走子清單與曲線共同使用的 `selectedPly`。
-6. 最後才加策略旁白、PWA 和 Tauri。
+3. [完成基礎版] `node:test` 針對 engine／review pure functions；`feature/review-data` 已補上 ply 0、`analysisByPly`、黑方失誤與棋規邊界（將死、升變、易位、en passant、非法 PGN、自訂起始 FEN）fixtures。
+4. [完成於 `feature/review-data`] `GameMove`／`ParsedGame` 統一為 `beforeFen`／`afterFen`，PV 逐手重播成 SAN。
+5. [完成於 `feature/review-data`] `App.jsx` 已改為 `ParsedGame + analysisByPly + selectedPly`（`selectedPly = 0` 為初始局面）；集中化 `CLASSIFICATION_THRESHOLDS`，加入 `summarize()` 全局摘要與 `confirmed`／`inferred` 分離的 `commentary`。本分支刻意不加播放 UI。
+6. **下一步：**將此資料分支合併到 `main` 後，另開 `feature/interactive-board`：真正的棋盤元件與棋子圖示、走子清單、前後步與播放、曲線跳轉，全部只透過唯一的 `selectedPly` 互動；同時補上主變例檢視。
+7. 最後才加策略旁白（填入 `commentary.inferred`）、PWA 和 Tauri。
 
 每一步完成時，更新本手冊的「目前技術基線」和需求文件對應 phase checkbox，並在回覆中列出執行過的驗證命令與結果。
+
+## 8.1 目前接手斷點（2026-10-07）
+
+```md
+## 交接摘要
+- 完成：`main` 已有可取消的本機 Stockfish 分析核心；`feature/review-data` 已完成 `ReviewMove` 資料契約——以 ply 索引的 `analysisByPly`、`selectedPly = 0` 初始局面、集中化失誤門檻、`summarize()` 全局摘要、`confirmed`／`inferred` 分離的 commentary，以及棋規邊界測試。
+- 未完成：沒有真正的互動棋盤／回放 UI、沒有主變例檢視、沒有策略旁白（`commentary.inferred` 仍為空）、沒有 PWA／Tauri 包裝、沒有 MultiPV 與關鍵點重分析。
+- 目前 branch：`feature/review-data`（已可驗證，待合併到 `main`；勿直接在 main 修改）。
+- 最近一次驗證：`npm test`（16 passed / 0 failed）與 `npm run build` 皆通過；接手前務必重跑。
+- 已知限制：UI 仍是概念雛形（純文字棋子、無播放）；曲線只畫到第一個未分析的 ply；「勝率」實際上是 WDL 期望得分，文案已改為「白方期望得分（引擎估計）」；深度選項仍是固定 depth，未實作需求文件 §7 的關鍵點時間分配。
+- 下一步（唯一最高優先）：把 `feature/review-data` 合併進 `main`，再開 `feature/interactive-board`，讓棋盤、走子清單與曲線共用唯一的 `selectedPly`。
+```
 
 ## 9. GitHub 準備清單
 
