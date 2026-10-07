@@ -14,9 +14,18 @@ export function readPgn(pgn) {
   const game = new Chess();
   try { game.loadPgn(pgn.trim()); }
   catch (error) { throw new Error(`無法讀取棋譜：${error.message}`); }
-  const moves = game.history({ verbose: true });
+  const moves = game.history({ verbose: true }).map((move, index) => ({
+    ply: index + 1,
+    fullmove: Number(move.before.split(' ')[5]),
+    color: move.color,
+    san: move.san,
+    uci: move.lan,
+    beforeFen: move.before,
+    afterFen: move.after,
+    flags: move.flags,
+  }));
   if (!moves.length) throw new Error('棋譜中找不到任何合法著法。請貼上完整 PGN。');
-  return { moves, headers: game.getHeaders() };
+  return { moves, headers: game.getHeaders(), initialFen: moves[0].beforeFen };
 }
 
 export function moveFromUci(fen, uci) {
@@ -25,6 +34,22 @@ export function moveFromUci(fen, uci) {
   try {
     return position.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] })?.san ?? uci;
   } catch { return uci; }
+}
+
+export function replayPv(startFen, pv) {
+  const position = new Chess(startFen);
+  const moves = [];
+  for (const uci of pv) {
+    const beforeFen = position.fen();
+    try {
+      const move = position.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] });
+      if (!move) throw new Error('沒有合法著法');
+      moves.push({ uci, san: move.san, beforeFen, afterFen: position.fen() });
+    } catch {
+      return { moves, error: `引擎主變例含無法重播的著法：${uci}` };
+    }
+  }
+  return { moves, error: null };
 }
 
 /**
@@ -90,9 +115,9 @@ export function classify(loss) {
 }
 
 export function makeInsight(item) {
-  const side = item.color === 'w' ? '白方' : '黑方';
+  const side = item.actual.color === 'w' ? '白方' : '黑方';
   const direction = item.afterEvaluation.score.value >= 0 ? '白方' : '黑方';
-  if (item.classification.tone === 'best') return `${side}下出接近引擎首選的 ${item.san}。局面評估為 ${formatEvaluation(item.afterEvaluation)}，${direction}稍佔優勢。`;
+  if (item.classification.tone === 'best') return `${side}下出接近引擎首選的 ${item.actual.san}。局面評估為 ${formatEvaluation(item.afterEvaluation)}，${direction}稍佔優勢。`;
   const drop = (item.lossCp / 100).toFixed(2);
-  return `${side}的 ${item.san} 讓局面少了約 ${drop} 兵的評估；引擎偏好 ${item.bestSan}。走後評估 ${formatEvaluation(item.afterEvaluation)}，勝率明顯往${direction}傾斜。`;
+  return `${side}的 ${item.actual.san} 讓局面少了約 ${drop} 兵的評估；引擎偏好 ${item.bestSan}。走後評估 ${formatEvaluation(item.afterEvaluation)}，勝率明顯往${direction}傾斜。`;
 }

@@ -50,7 +50,7 @@ git push -u origin feature/<scope>
 
 ### 目前 branch 狀態
 
-`main` 是首次可建置基線。分支規則已合併至 `main`；目前正在 `feature/analysis-core` 實作第一階段。未來實作必須從乾淨、最新的 `main` 開出相應 feature branch。
+`main` 是最新已整合基線。`feature/analysis-core` 已於 `d33975b` 合併；目前工作斷點是 `feature/review-data`。該分支已將 PGN 走子標準化為 `GameMove`（`beforeFen`／`afterFen`）並讓引擎 PV 逐手重播成 SAN，但尚未合併。未來實作必須從乾淨、最新的 `main` 開出相應 feature branch。
 
 ## 2. 目前技術基線
 
@@ -67,7 +67,7 @@ git push -u origin feature/<scope>
 | `test/engine.test.js` | Fake Worker 下的 UCI queue、cp 0、MultiPV 與取消測試 |
 | `test/review.test.js` | 評分視角、WDL、終局、PGN 與分類邊界測試 |
 
-`feature/analysis-core` 已完成但尚未合併的工作：單 Worker FIFO queue、AbortSignal 取消、Worker 錯誤重置、將殺／逼和的明確表示，以及 `npm test` 基礎測試。重要：目前 UI 仍是概念雛形，不得因為能顯示畫面就視為可交付產品。下一步是以獨立 `feature/review-data` 統一 `ReviewMove`，再擴展介面。
+已整合的 `feature/analysis-core`：單 Worker FIFO queue、AbortSignal 取消、Worker 錯誤重置、將殺／逼和的明確表示，以及 `npm test` 基礎測試。`feature/review-data` 的 checkpoint：`readPgn()` 已輸出含 `ply`、真實 `fullmove`、`beforeFen`、`afterFen` 的穩定 `GameMove`；`replayPv()` 將 UCI 主變例逐著轉 SAN 並保留每一步 FEN。重要：目前 UI 仍是概念雛形，不得因為能顯示畫面就視為可交付產品。
 
 ## 3. 啟動、建置與品質檢查
 
@@ -200,11 +200,24 @@ settings       深度／時間、使用者執子顏色（未來）
 1. 讀本文件與需求文件，執行 `npm test && npm run build`，先確認基線。
 2. [完成於 `feature/analysis-core`] 單一 UCI Worker 的 FIFO queue、取消、run ID 與錯誤復原。
 3. [完成基礎版] `node:test` 針對 engine／review pure functions；後續分支需補齊棋規 fixtures。
-4. **下一步：**把資料欄位明確化為 `ReviewMove`，統一命名為 `beforeFen`／`afterFen`，並將 PV 逐手重播成 SAN。
-5. 以此資料模型完成互動棋盤、走子清單與曲線共同使用的 `selectedPly`。
-6. 最後才加策略旁白、PWA 和 Tauri。
+4. [進行中於 `feature/review-data`] `GameMove` 已統一為 `beforeFen`／`afterFen`，PV 已逐手重播成 SAN。
+5. **下一步：**將 `App.jsx` 的扁平 `review[]` 改為 `ParsedGame + analysisByPly + selectedPly (0-base 初始局面可選)`；不可在這個分支加入播放 UI。
+6. 將此資料分支完成、測試並合併後，另開 `feature/interactive-board` 做互動棋盤、走子清單與曲線共同使用的 `selectedPly`。
+7. 最後才加策略旁白、PWA 和 Tauri。
 
 每一步完成時，更新本手冊的「目前技術基線」和需求文件對應 phase checkbox，並在回覆中列出執行過的驗證命令與結果。
+
+## 8.1 目前接手斷點（2026-10-07）
+
+```md
+## 交接摘要
+- 完成：`main` 已有可取消的本機 Stockfish 分析核心；`feature/review-data` 已開始標準化 PGN／PV 資料。
+- 未完成：尚未建立完整 `ReviewMove` contract、沒有 initial position（ply 0）檢視、沒有播放／變例模式、沒有策略旁白。
+- 目前 branch：`feature/review-data`（必須先完成或明確丟棄／重建，勿直接在 main 修改）。
+- 最近一次驗證：`npm test && npm run build`；接手前務必重跑。
+- 已知限制：UI 還用 `review[]` 作為選取索引，故僅能看已分析手；主變例已 SAN 化但沒有變例檢視 UI；勝率名稱實際上是 WDL 期望得分。
+- 下一步（唯一最高優先）：在 `feature/review-data` 將分析狀態從陣列改成依 ply 索引的資料，再補 `selectedPly = 0` 的初始局面契約與測試。
+```
 
 ## 9. GitHub 準備清單
 

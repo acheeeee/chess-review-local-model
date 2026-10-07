@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Chess } from 'chess.js';
 import { Stockfish } from './engine.js';
-import { SAMPLE_PGN, classify, formatEvaluation, lossCp, makeInsight, moveFromUci, normalizeEvaluation, readPgn, terminalEvaluation, whiteWinChance } from './review.js';
+import { SAMPLE_PGN, classify, formatEvaluation, lossCp, makeInsight, moveFromUci, normalizeEvaluation, readPgn, replayPv, terminalEvaluation, whiteWinChance } from './review.js';
 
 const PIECES = { p: '♟', n: '♞', b: '♝', r: '♜', q: '♛', k: '♚', P: '♙', N: '♘', B: '♗', R: '♖', Q: '♕', K: '♔' };
 
@@ -78,15 +78,16 @@ export default function App() {
         if (run.controller.signal.aborted) throw new DOMException('分析已取消', 'AbortError');
         const move = game.moves[index];
         setProgress({ current: index + 1, total: game.moves.length });
-        setStatus(`分析第 ${Math.floor(index / 2) + 1} 回合：${move.san}`);
-        const best = await engine.current.analyse(move.before, { depth, signal: run.controller.signal });
-        const terminal = terminalEvaluation(move.after);
-        const actual = terminal ? null : await engine.current.analyse(move.after, { depth, signal: run.controller.signal });
+        setStatus(`分析第 ${move.fullmove} 回合：${move.san}`);
+        const best = await engine.current.analyse(move.beforeFen, { depth, signal: run.controller.signal });
+        const terminal = terminalEvaluation(move.afterFen);
+        const actual = terminal ? null : await engine.current.analyse(move.afterFen, { depth, signal: run.controller.signal });
         if (run.controller.signal.aborted || analysisRun.current?.id !== run.id) return;
-        const bestEvaluation = normalizeEvaluation(best, move.before);
-        const afterEvaluation = terminal ?? normalizeEvaluation(actual, move.after);
+        const bestEvaluation = normalizeEvaluation(best, move.beforeFen);
+        const afterEvaluation = terminal ?? normalizeEvaluation(actual, move.afterFen);
         const loss = lossCp(bestEvaluation, afterEvaluation, move.color);
-        const item = { ply: index + 1, fullmove: Math.floor(index / 2) + 1, color: move.color, san: move.san, uci: move.lan, before: move.before, after: move.after, bestSan: moveFromUci(move.before, best.bestMove), bestLine: best.pv.slice(0, 6).map((uci, i) => i === 0 ? moveFromUci(move.before, uci) : uci).join(' · '), bestEvaluation, afterEvaluation, whiteChance: whiteWinChance(afterEvaluation), lossCp: loss, classification: classify(loss) };
+        const pv = replayPv(move.beforeFen, best.pv.slice(0, 6));
+        const item = { ply: move.ply, actual: move, bestEvaluation, afterEvaluation, bestSan: moveFromUci(move.beforeFen, best.bestMove), pv, whiteChance: whiteWinChance(afterEvaluation), lossCp: loss, classification: classify(loss) };
         item.insight = makeInsight(item);
         analysed.push(item);
         setReview([...analysed]);
@@ -110,7 +111,7 @@ export default function App() {
   function cancelAnalysis() { analysisRun.current?.controller.abort(); }
 
   const current = review[selected];
-  const shownFen = current?.after ?? 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+  const shownFen = current?.actual.afterFen ?? 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
   const counts = review.reduce((all, item) => ({ ...all, [item.classification.tone]: (all[item.classification.tone] ?? 0) + 1 }), {});
 
   return <main>
@@ -120,12 +121,12 @@ export default function App() {
       {error && <p className="error">{error}</p>}<p className="status"><i className={progress ? 'pulse' : ''} />{status}</p>
     </section>
     <section className="results">
-      <div className="board-card"><div className="game-meta"><span>{headers.White ?? '白方'} <b>vs</b> {headers.Black ?? '黑方'}</span><small>{headers.Result ?? '*'}</small></div><div className="board-area"><EvaluationBar value={current?.whiteChance ?? 50} /><Board fen={shownFen} lastMove={current?.uci} /></div>{current && <div className="move-nav"><button onClick={() => setSelected(Math.max(0, selected - 1))} disabled={selected === 0}>←</button><span>第 {current.fullmove} 回合 · {current.color === 'w' ? '白方' : '黑方'}走</span><button onClick={() => setSelected(Math.min(review.length - 1, selected + 1))} disabled={selected === review.length - 1}>→</button></div>}</div>
+      <div className="board-card"><div className="game-meta"><span>{headers.White ?? '白方'} <b>vs</b> {headers.Black ?? '黑方'}</span><small>{headers.Result ?? '*'}</small></div><div className="board-area"><EvaluationBar value={current?.whiteChance ?? 50} /><Board fen={shownFen} lastMove={current?.actual.uci} /></div>{current && <div className="move-nav"><button onClick={() => setSelected(Math.max(0, selected - 1))} disabled={selected === 0}>←</button><span>第 {current.actual.fullmove} 回合 · {current.actual.color === 'w' ? '白方' : '黑方'}走</span><button onClick={() => setSelected(Math.min(review.length - 1, selected + 1))} disabled={selected === review.length - 1}>→</button></div>}</div>
       <div className="review-card"><div className="card-title"><div><p className="eyebrow">ENGINE REVIEW</p><h2>勝率走勢</h2></div>{current && <div className="chance"><b>{current.whiteChance.toFixed(0)}%</b><span>白方勝率</span></div>}</div><Chart items={review} active={selected} onPick={setSelected} />
         {review.length > 0 && <div className="summary"><span><b>{counts.blunder ?? 0}</b> 大失誤</span><span><b>{counts.mistake ?? 0}</b> 失誤</span><span><b>{counts.best ?? 0}</b> 最佳著</span></div>}
-        {current ? <article className="insight"><div className="move-head"><span className={`badge ${current.classification.tone}`}>{current.classification.label}</span><h3>{current.fullmove}{current.color === 'w' ? '.' : '...'} {current.san}</h3><strong>{formatEvaluation(current.afterEvaluation)}</strong></div><p>{current.insight}</p><div className="best-line"><span>引擎建議</span><b>{current.bestSan}</b><small>{current.bestLine}</small></div></article> : <div className="empty-review"><span>♞</span><p>還沒有分析結果</p><small>貼上棋譜，開始看懂每一個關鍵轉折。</small></div>}
+        {current ? <article className="insight"><div className="move-head"><span className={`badge ${current.classification.tone}`}>{current.classification.label}</span><h3>{current.actual.fullmove}{current.actual.color === 'w' ? '.' : '...'} {current.actual.san}</h3><strong>{formatEvaluation(current.afterEvaluation)}</strong></div><p>{current.insight}</p><div className="best-line"><span>引擎建議</span><b>{current.bestSan}</b><small>{current.pv.moves.map((move) => move.san).join(' · ') || '—'}</small></div>{current.pv.error && <p className="error">{current.pv.error}</p>}</article> : <div className="empty-review"><span>♞</span><p>還沒有分析結果</p><small>貼上棋譜，開始看懂每一個關鍵轉折。</small></div>}
       </div>
     </section>
-    {review.length > 0 && <section className="move-list"><h2>逐步檢討</h2><div>{review.map((item, index) => <button key={item.ply} onClick={() => setSelected(index)} className={selected === index ? 'active' : ''}><span>{item.fullmove}{item.color === 'w' ? '.' : '...'}</span><b>{item.san}</b><em className={item.classification.tone}>{item.classification.label}</em><small>白方 {item.whiteChance.toFixed(0)}%</small></button>)}</div></section>}
+    {review.length > 0 && <section className="move-list"><h2>逐步檢討</h2><div>{review.map((item, index) => <button key={item.ply} onClick={() => setSelected(index)} className={selected === index ? 'active' : ''}><span>{item.actual.fullmove}{item.actual.color === 'w' ? '.' : '...'}</span><b>{item.actual.san}</b><em className={item.classification.tone}>{item.classification.label}</em><small>白方 {item.whiteChance.toFixed(0)}%</small></button>)}</div></section>}
   </main>;
 }

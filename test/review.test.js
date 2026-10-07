@@ -44,7 +44,7 @@ test('reads PGN main line and preserves verbose before/after positions', () => {
   const game = readPgn('[SetUp "1"]\n[FEN "7k/P7/8/8/8/8/7K/8 w - - 0 1"]\n\n1. a8=N 1/2-1/2');
   assert.equal(game.moves.length, 1);
   assert.equal(game.moves[0].san, 'a8=N');
-  assert.equal(game.moves[0].before, '7k/P7/8/8/8/8/7K/8 w - - 0 1');
+  assert.equal(game.moves[0].beforeFen, '7k/P7/8/8/8/8/7K/8 w - - 0 1');
   assert.equal(classify(15).tone, 'best');
   assert.equal(classify(16).tone, 'good');
 });
