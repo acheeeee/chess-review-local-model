@@ -13,9 +13,11 @@ export function parseInfo(line) {
   const wdl = line.match(/\bwdl (\d+) (\d+) (\d+)/);
 
   // `cp 0` is a valid (and common) evaluation, so never use a truthy test here.
-  if (multiPv !== 1 || !pv.length || (mateText === undefined && cpText === undefined)) return null;
+  if (!pv.length || (mateText === undefined && cpText === undefined)) return null;
   return {
     depth,
+    // MultiPV lines are kept: slot 1 is the engine's choice, 2+ are alternatives.
+    multiPv,
     cp: cpText === undefined ? null : Number(cpText),
     mate: mateText === undefined ? null : Number(mateText),
     pv,
@@ -31,6 +33,8 @@ export class Stockfish {
     this.queue = [];
     this.active = null;
     this.starting = false;
+    // Mirrors the engine's current MultiPV option so it is only re-sent on change.
+    this.multiPv = 1;
   }
 
   start() {
@@ -70,7 +74,11 @@ export class Stockfish {
     }
     if (line.startsWith('info ') && this.active) {
       const info = parseInfo(line);
-      if (info && info.depth >= this.active.info.depth) this.active.info = info;
+      if (!info) return;
+      // Keep the deepest line per MultiPV slot; slot 1 is the main line.
+      const previous = this.active.lines.get(info.multiPv);
+      if (!previous || info.depth >= previous.depth) this.active.lines.set(info.multiPv, info);
+      if (info.multiPv === 1 && info.depth >= this.active.info.depth) this.active.info = info;
       return;
     }
     if (line.startsWith('bestmove ') && this.active) {
@@ -79,19 +87,27 @@ export class Stockfish {
       clearTimeout(active.stopTimer);
       active.signal?.removeEventListener('abort', active.abortHandler);
       const bestMove = line.split(/\s+/)[1] ?? '(none)';
+      const lines = [...active.lines.entries()]
+        .sort(([left], [right]) => left - right)
+        .map(([multiPv, info]) => ({ ...info, multiPv }));
       if (active.cancelled) active.reject(abortError());
       else if (active.info.cp === null && active.info.mate === null) active.reject(new Error('引擎未回傳可用評估，請重新分析。'));
-      else active.resolve({ ...active.info, bestMove });
+      else active.resolve({ ...active.info, bestMove, lines });
       this.pump();
     }
   }
 
-  async analyse(fen, { depth = 13, signal } = {}) {
+  /**
+   * Queues one search. `movetime` (ms) takes priority over `depth`, which is how
+   * the deep mode spends more time on key moments. `multiPv` > 1 also returns
+   * alternative lines in `lines`.
+   */
+  async analyse(fen, { depth = 13, movetime = 0, multiPv = 1, signal } = {}) {
     if (signal?.aborted) throw abortError();
     await this.start();
     if (signal?.aborted) throw abortError();
     return new Promise((resolve, reject) => {
-      const job = { fen, depth, signal, resolve, reject, info: null, cancelled: false, abortHandler: null, stopTimer: null };
+      const job = { fen, depth, movetime, multiPv, signal, resolve, reject, info: null, lines: null, cancelled: false, abortHandler: null, stopTimer: null };
       job.abortHandler = () => this.cancel(job);
       signal?.addEventListener('abort', job.abortHandler, { once: true });
       this.queue.push(job);
@@ -109,10 +125,15 @@ export class Stockfish {
       this.pump();
       return;
     }
-    job.info = { depth: 0, cp: null, mate: null, pv: [], wdl: null };
+    job.info = { depth: 0, multiPv: 1, cp: null, mate: null, pv: [], wdl: null };
+    job.lines = new Map();
     this.active = job;
+    if (job.multiPv !== this.multiPv) {
+      this.worker.postMessage(`setoption name MultiPV value ${job.multiPv}`);
+      this.multiPv = job.multiPv;
+    }
     this.worker.postMessage(`position fen ${job.fen}`);
-    this.worker.postMessage(`go depth ${job.depth}`);
+    this.worker.postMessage(job.movetime > 0 ? `go movetime ${job.movetime}` : `go depth ${job.depth}`);
   }
 
   cancel(job) {
@@ -151,6 +172,8 @@ export class Stockfish {
     this.queue = [];
     this.worker?.terminate();
     this.worker = null;
+    // A new worker starts at the engine default again.
+    this.multiPv = 1;
     this.startReject?.(reason);
     this.startResolve = null;
     this.startReject = null;

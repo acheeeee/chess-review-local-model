@@ -1,19 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Stockfish } from './engine.js';
 import { Piece } from './pieces.jsx';
-import { canStep, interactiveBoard, moveRows, stepPly } from './navigation.js';
+import { canStep, candidateLines, interactiveBoard, moveRows, stepPly } from './navigation.js';
 import {
+  ANALYSIS_MODES,
   SAMPLE_PGN,
   START_PLY,
   buildReviewMove,
   chanceAtPly,
   chartPoints,
+  deepLines,
   formatEvaluation,
+  keyPlies,
   plyLabel,
   readPgn,
   selectPlyView,
   summarize,
   terminalEvaluation,
+  withDeepLines,
   withReviewMove,
 } from './review.js';
 
@@ -93,18 +97,18 @@ export default function App() {
   const [analysisByPly, setAnalysisByPly] = useState({});
   // The single source of truth shared by board, chart, move list and panel.
   const [selectedPly, setSelectedPly] = useState(START_PLY);
-  const [variationIndex, setVariationIndex] = useState(null);
+  const [variation, setVariation] = useState(null);
   const [orientation, setOrientation] = useState('w');
   const [playing, setPlaying] = useState(false);
   const [status, setStatus] = useState('貼上棋譜後開始本機分析');
   const [progress, setProgress] = useState(null);
   const [error, setError] = useState('');
-  const [depth, setDepth] = useState(13);
+  const [modeKey, setModeKey] = useState('balanced');
 
   // Every interaction goes through here, so no component keeps its own board.
   const selectPly = useCallback((ply) => {
     setSelectedPly(ply);
-    setVariationIndex(null);
+    setVariation(null);
   }, []);
 
   useEffect(() => () => {
@@ -138,6 +142,7 @@ export default function App() {
     analysisRun.current?.controller.abort();
     const run = { id: crypto.randomUUID(), controller: new AbortController() };
     analysisRun.current = run;
+    const mode = ANALYSIS_MODES[modeKey] ?? ANALYSIS_MODES.balanced;
     setError('');
     setAnalysisByPly({});
     setPlaying(false);
@@ -146,20 +151,47 @@ export default function App() {
     try { parsed = readPgn(pgn); }
     catch (reason) { setGame(null); setError(reason.message); return; }
     setGame(parsed);
+    const isStale = () => run.controller.signal.aborted || analysisRun.current?.id !== run.id;
     try {
       setStatus('正在載入本機 Stockfish 引擎…');
       await engine.current.start();
+      // Pass 1: every half-move at the mode's base depth.
+      let collected = {};
       for (const move of parsed.moves) {
         if (run.controller.signal.aborted) throw new DOMException('分析已取消', 'AbortError');
-        setProgress({ current: move.ply, total: parsed.lastPly });
+        setProgress({ phase: 'scan', current: move.ply, total: parsed.lastPly });
         setStatus(`分析第 ${move.fullmove} 回合：${move.san}`);
-        const best = await engine.current.analyse(move.beforeFen, { depth, signal: run.controller.signal });
+        const best = await engine.current.analyse(move.beforeFen, { depth: mode.depth, signal: run.controller.signal });
         const terminal = terminalEvaluation(move.afterFen);
-        const after = terminal ?? await engine.current.analyse(move.afterFen, { depth, signal: run.controller.signal });
-        if (run.controller.signal.aborted || analysisRun.current?.id !== run.id) return;
-        setAnalysisByPly((previous) => withReviewMove(previous, buildReviewMove({ move, best, after })));
+        const after = terminal ?? await engine.current.analyse(move.afterFen, { depth: mode.depth, signal: run.controller.signal });
+        if (isStale()) return;
+        collected = withReviewMove(collected, buildReviewMove({ move, best, after }));
+        setAnalysisByPly(collected);
       }
-      if (analysisRun.current?.id === run.id) setStatus('分析完成：所有計算均在此裝置的瀏覽器內進行。');
+      // Pass 2: spend the extra time only where the game actually turned.
+      const keys = mode.keyLimit > 0 && mode.multiPv > 1 ? keyPlies(collected, { limit: mode.keyLimit }) : [];
+      for (const [index, ply] of keys.entries()) {
+        if (run.controller.signal.aborted) throw new DOMException('分析已取消', 'AbortError');
+        const move = parsed.moves[ply - 1];
+        setProgress({ phase: 'deep', current: index + 1, total: keys.length });
+        setStatus(`重新深入分析關鍵點 ${index + 1}/${keys.length}：第 ${move.fullmove} 回合 ${move.san}`);
+        const result = await engine.current.analyse(move.beforeFen, {
+          movetime: mode.keyMovetime,
+          multiPv: mode.multiPv,
+          signal: run.controller.signal,
+        });
+        if (isStale()) return;
+        const deep = deepLines(move, result, { movetime: mode.keyMovetime });
+        if (deep) {
+          collected = { ...collected, [ply]: withDeepLines(collected[ply], deep) };
+          setAnalysisByPly(collected);
+        }
+      }
+      if (analysisRun.current?.id === run.id) {
+        setStatus(keys.length
+          ? `分析完成：已針對 ${keys.length} 個關鍵點用 ${(mode.keyMovetime / 1000).toFixed(1)} 秒／手重跑並列出候選著。所有計算都在此裝置內進行。`
+          : '分析完成：所有計算均在此裝置的瀏覽器內進行。');
+      }
     } catch (reason) {
       if (analysisRun.current?.id !== run.id) return;
       if (reason?.name === 'AbortError') setStatus('已取消分析。你可以調整棋譜或設定後重新開始。');
@@ -180,19 +212,31 @@ export default function App() {
   const headers = game?.headers ?? {};
   const plyView = selectPlyView(game, analysisByPly, selectedPly);
   const board = useMemo(
-    () => interactiveBoard(game, analysisByPly, { selectedPly: plyView.selectedPly, orientation, variationIndex }),
-    [game, analysisByPly, plyView.selectedPly, orientation, variationIndex],
+    () => interactiveBoard(game, analysisByPly, { selectedPly: plyView.selectedPly, orientation, variation }),
+    [game, analysisByPly, plyView.selectedPly, orientation, variation],
   );
   const current = plyView.analysis;
   const points = useMemo(() => chartPoints(game, analysisByPly), [game, analysisByPly]);
   const summary = useMemo(() => summarize(analysisByPly), [analysisByPly]);
   const rows = useMemo(() => moveRows(game, analysisByPly), [game, analysisByPly]);
-  const variation = board.variation;
+  const lines = useMemo(() => candidateLines(current), [current]);
+  const preview = board.variation;
+  const mode = ANALYSIS_MODES[modeKey] ?? ANALYSIS_MODES.balanced;
 
   return <main>
     <section className="hero"><div><p className="eyebrow">LOCAL · PRIVATE · STOCKFISH 19</p><h1>棋見<span>。</span></h1><p className="tagline">把每一步下得更明白。</p></div><div className="privacy"><span>⌁</span><p><strong>完全本地運算</strong><br />棋譜與分析不會離開你的電腦</p></div></section>
     <section className="input-card"><div className="input-heading"><div><h2>貼上你的棋譜</h2><p>支援標準 PGN；可包含對局資訊與註解。</p></div><button className="text-button" onClick={() => setPgn(SAMPLE_PGN)}>載入示範棋局</button></div><textarea value={pgn} onChange={(event) => setPgn(event.target.value)} spellCheck="false" aria-label="PGN 棋譜" />
-      <div className="actions"><label>分析深度 <select value={depth} onChange={(event) => setDepth(Number(event.target.value))} disabled={!!progress}><option value="10">快速（深度 10）</option><option value="13">平衡（深度 13）</option><option value="16">仔細（深度 16）</option></select></label>{progress ? <button className="cancel" onClick={cancelAnalysis}>取消分析（{progress.current}/{progress.total}）</button> : <button className="analyse" onClick={analyseGame}>開始檢討 →</button>}</div>
+      <div className="actions">
+        <label>分析模式 <select value={modeKey} onChange={(event) => setModeKey(event.target.value)} disabled={!!progress}>
+          {Object.values(ANALYSIS_MODES).map((option) => <option key={option.key} value={option.key}>{option.label}（深度 {option.depth}{option.keyLimit > 0 ? ` + 關鍵點 ${option.keyMovetime / 1000} 秒` : ''}）</option>)}
+        </select></label>
+        {progress
+          ? <button className="cancel" onClick={cancelAnalysis}>取消分析（{progress.phase === 'deep' ? '關鍵點 ' : ''}{progress.current}/{progress.total}）</button>
+          : <button className="analyse" onClick={analyseGame}>開始檢討 →</button>}
+      </div>
+      <p className="mode-note">{mode.keyLimit > 0
+        ? `先以深度 ${mode.depth} 掃完整局，再從失誤與勝率劇變中挑最多 ${mode.keyLimit} 個關鍵點，用 ${(mode.keyMovetime / 1000).toFixed(1)} 秒／手搭配 MultiPV ${mode.multiPv} 重跑，列出替代著法。`
+        : `只以深度 ${mode.depth} 快速掃一遍，不做關鍵點重分析。`}</p>
       {error && <p className="error">{error}</p>}<p className="status"><i className={progress ? 'pulse' : ''} />{status}</p>
     </section>
     <section className="results">
@@ -200,11 +244,11 @@ export default function App() {
         <div className="game-meta"><span>{headers.White ?? '白方'} <b>vs</b> {headers.Black ?? '黑方'}</span><small>{headers.Result ?? '*'}</small></div>
         <div className="board-area">
           <EvaluationBar value={plyView.whiteWinChance} orientation={orientation} />
-          <Board view={board.view} caption={variation ? `引擎變例預覽：${variation.san}` : `局面：${plyView.label}`} />
+          <Board view={board.view} caption={preview ? `引擎變例預覽：${preview.san}` : `局面：${plyView.label}`} />
         </div>
-        <div className={`board-caption ${variation ? 'variation' : ''}`}>
-          {variation
-            ? <><b>變例預覽</b><span>引擎建議線第 {variation.index + 1} 步：{variation.san}</span><button className="text-button" onClick={() => setVariationIndex(null)}>回到實戰</button></>
+        <div className={`board-caption ${preview ? 'variation' : ''}`}>
+          {preview
+            ? <><b>變例預覽</b><span>候選著 #{preview.rank}（{preview.lineSan}）第 {preview.step + 1} 步：{preview.san}</span><button className="text-button" onClick={() => setVariation(null)}>回到實戰</button></>
             : <><b>{plyView.isStart ? '初始局面' : plyView.label}</b><span>{plyView.move ? `${plyView.move.color === 'w' ? '白方' : '黑方'}走 · 第 ${plyView.move.fullmove} 回合` : '白方走第一手之前'}</span></>}
         </div>
         {game && <div className="move-nav" role="group" aria-label="棋局回放">
@@ -234,20 +278,28 @@ export default function App() {
             <p className="inferred-title">規則式推論（非引擎結論）</p>
             <ul className="commentary inferred">{current.commentary.inferred.map((line) => <li key={line}>{line}</li>)}</ul>
           </div>}
-          <div className="best-line">
-            <span>引擎建議</span>
-            <b>{current.bestSan}</b>
-            <div className="pv">
-              {current.pv.moves.length === 0 && <small>—</small>}
-              {current.pv.moves.map((move, index) => <button
-                key={`${move.uci}-${index}`}
-                className={variationIndex === index ? 'active' : ''}
-                onClick={() => setVariationIndex(index)}
-                title="在棋盤上預覽這一步"
-              >{move.san}</button>)}
+          <div className="lines">
+            <div className="lines-head">
+              <span>{current.deep ? `引擎候選著（關鍵點重分析，${(current.deep.movetime / 1000).toFixed(1)} 秒／MultiPV ${current.deep.multiPv}）` : '引擎建議'}</span>
+              {current.deep && <small>{current.deep.playedRank ? `實戰著是引擎第 ${current.deep.playedRank} 選擇` : '實戰著不在引擎候選名單內'}</small>}
             </div>
+            {lines.length === 0 && <p className="empty-line">引擎沒有回傳可重播的變例。</p>}
+            {lines.map((line) => <div className={`line ${preview?.key === line.key ? 'active' : ''}`} key={line.key}>
+              <span className="line-rank">#{line.rank}</span>
+              <b className="line-move">{line.san}</b>
+              <span className="line-eval">{formatEvaluation(line.evaluation)}</span>
+              {line.lossCp > 0 && <span className="line-loss">−{(line.lossCp / 100).toFixed(2)}</span>}
+              <div className="pv">
+                {line.moves.map((move, index) => <button
+                  key={`${line.key}-${move.uci}-${index}`}
+                  className={preview?.key === line.key && preview?.step === index ? 'active' : ''}
+                  onClick={() => setVariation({ key: line.key, step: index })}
+                  title="在棋盤上預覽這一步"
+                >{move.san}</button>)}
+              </div>
+              {line.error && <p className="error">{line.error}</p>}
+            </div>)}
           </div>
-          {current.pv.error && <p className="error">{current.pv.error}</p>}
           <p className="honesty">上半部是引擎評估與可在棋盤上查證的事實；「規則式推論」由固定規則依子力、王安全、兵形與中心控制產生，附上判斷依據，不是引擎或語言模型的結論。</p>
         </article> : <article className="insight">
           {plyView.isStart && plyView.evaluation ? <>

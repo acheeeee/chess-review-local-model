@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { boardView, canStep, interactiveBoard, moveRows, stepPly, variationLine, variationView } from '../src/navigation.js';
-import { START_PLY, buildReviewMove, readPgn, withReviewMove } from '../src/review.js';
+import { boardView, canStep, candidateLines, interactiveBoard, moveRows, stepPly, variationLine, variationView } from '../src/navigation.js';
+import { START_PLY, buildReviewMove, deepLines, readPgn, withDeepLines, withReviewMove } from '../src/review.js';
 
 function engineResult({ cp = null, mate = null, wdl = null, pv = [], bestMove = '(none)' }) {
   return { depth: 13, cp, mate, wdl, pv, bestMove };
@@ -94,15 +94,55 @@ test('variation preview walks the engine line and never leaks into the real game
   assert.deepEqual(line.map((step) => step.color), ['b', 'w', 'b'], 'the line alternates from the mover');
   assert.deepEqual(variationLine(null), []);
 
-  assert.equal(variationView(review, null), null, 'null index means the real game');
-  const first = variationView(review, 0);
-  assert.equal(first.index, 0);
+  const lines = candidateLines(review);
+  assert.deepEqual(lines.map((candidate) => candidate.key), ['pv'], 'without a deep pass there is only the main line');
+  assert.equal(lines[0].san, 'Nc6');
+
+  assert.equal(variationView(review, null), null, 'null selection means the real game');
+  const first = variationView(review, { key: 'pv', step: 0 });
+  assert.equal(first.step, 0);
   assert.equal(first.san, 'Nc6');
   assert.equal(first.lastMoveUci, 'b8c6');
   assert.equal(first.fen, review.pv.moves[0].afterFen);
   assert.notEqual(first.fen, review.afterFen, 'the variation board differs from the played position');
-  assert.equal(variationView(review, 99).index, 2, 'index is clamped to the line');
-  assert.equal(variationView(review, 2).isLast, true);
+  assert.equal(variationView(review, { key: 'pv', step: 99 }).step, 2, 'the step is clamped to the line');
+  assert.equal(variationView(review, { key: 'pv', step: 2 }).isLast, true);
+  assert.equal(variationView(review, { key: 'missing', step: 1 }).key, 'pv', 'an unknown line falls back to the first one');
+});
+
+test('deep candidate lines become previewable variations', () => {
+  const game = readPgn('1. e4 e5 2. Nf3 Qf6 *');
+  const played = buildReviewMove({
+    move: game.moves[3],
+    best: engineResult({ cp: 120, pv: ['b8c6'], bestMove: 'b8c6' }),
+    after: engineResult({ cp: 200 }),
+  });
+  const deep = deepLines(game.moves[3], {
+    depth: 20,
+    cp: 120,
+    mate: null,
+    wdl: null,
+    pv: ['b8c6'],
+    bestMove: 'b8c6',
+    lines: [
+      { multiPv: 1, depth: 20, cp: 120, mate: null, wdl: null, pv: ['b8c6', 'f1b5'] },
+      { multiPv: 2, depth: 20, cp: 60, mate: null, wdl: null, pv: ['g8f6', 'b1c3'] },
+      { multiPv: 3, depth: 20, cp: 10, mate: null, wdl: null, pv: ['d8f6'] },
+    ],
+  }, { movetime: 2500 });
+  const review = withDeepLines(played, deep);
+
+  const lines = candidateLines(review);
+  assert.deepEqual(lines.map((line) => line.key), ['deep-1', 'deep-2', 'deep-3'], 'deep candidates replace the single main line');
+  assert.deepEqual(lines.map((line) => line.san), ['Nc6', 'Nf6', 'Qf6']);
+  assert.equal(lines[0].deep, true);
+
+  const second = variationView(review, { key: 'deep-2', step: 1 });
+  assert.equal(second.rank, 2);
+  assert.equal(second.san, 'Nc3');
+  assert.equal(second.lineSan, 'Nf6');
+  assert.equal(second.fen, deep.lines[1].pv.moves[1].afterFen);
+  assert.equal(second.lines.length, 3);
 });
 
 test('interactiveBoard is the single derivation for board, highlights and preview', () => {
@@ -114,25 +154,25 @@ test('interactiveBoard is the single derivation for board, highlights and previe
   });
   const analysisByPly = withReviewMove({}, review);
 
-  const start = interactiveBoard(game, analysisByPly, { selectedPly: START_PLY, orientation: 'w', variationIndex: null });
+  const start = interactiveBoard(game, analysisByPly, { selectedPly: START_PLY, orientation: 'w', variation: null });
   assert.equal(start.fen, game.initialFen);
   assert.equal(start.variation, null);
   assert.equal(start.view.squares.filter((square) => square.isLastFrom || square.isLastTo).length, 0);
 
-  const played = interactiveBoard(game, analysisByPly, { selectedPly: 4, orientation: 'w', variationIndex: null });
+  const played = interactiveBoard(game, analysisByPly, { selectedPly: 4, orientation: 'w', variation: null });
   assert.equal(played.fen, review.afterFen);
   assert.equal(squareAt(played.view, 'd8').isLastFrom, true);
   assert.equal(squareAt(played.view, 'f6').isLastTo, true);
   assert.equal(played.view.squares.some((square) => square.isSuggestionTo), false, 'the played board never shows the suggestion as if it happened');
 
-  const preview = interactiveBoard(game, analysisByPly, { selectedPly: 4, orientation: 'b', variationIndex: 0 });
+  const preview = interactiveBoard(game, analysisByPly, { selectedPly: 4, orientation: 'b', variation: { key: 'pv', step: 0 } });
   assert.equal(preview.fen, review.pv.moves[0].afterFen);
   assert.equal(preview.variation.san, 'Nc6');
   assert.equal(preview.view.orientation, 'b');
   assert.equal(squareAt(preview.view, 'c6').isSuggestionTo, true, 'variation moves are marked as engine suggestions');
   assert.equal(preview.view.squares.some((square) => square.isLastTo), false);
 
-  const unanalysed = interactiveBoard(game, analysisByPly, { selectedPly: 2, orientation: 'w', variationIndex: 0 });
+  const unanalysed = interactiveBoard(game, analysisByPly, { selectedPly: 2, orientation: 'w', variation: { key: 'pv', step: 0 } });
   assert.equal(unanalysed.variation, null, 'a ply without analysis has no variation to preview');
   assert.equal(unanalysed.fen, game.moves[1].afterFen);
 });

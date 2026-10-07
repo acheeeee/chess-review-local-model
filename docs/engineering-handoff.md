@@ -98,6 +98,14 @@ git push -u origin feature/<scope>
 - 播放是 `playing` 狀態 + `setTimeout`（`PLAYBACK_MS`），到最後一手自動停止；任何手動操作都會停止播放。
 - 棋子是 `src/pieces.jsx` 的原創 SVG；國王、主教、皇后外形刻意區分（已用視覺預覽確認），黑子的十字／切口以淺色描邊維持對比。
 
+`feature/deep-analysis` 的深入模式（需求 §7）：
+
+- `ANALYSIS_MODES`（`src/review.js`）集中定義 `fast`／`balanced`／`deep`：基礎 `depth`、關鍵點 `keyMovetime`（ms）、`multiPv`、`keyLimit`。改時間預算只改這張表。
+- 分析分兩階段：第一階段用 `depth` 掃完每個半回合；第二階段只對 `keyPlies()` 選出的 ply 重跑，條件是 `lossCp >= KEY_MOMENT.lossCp`（失誤以上）或 `chanceSwing() >= KEY_MOMENT.chanceSwing`（期望得分變動 ≥ 10 個百分點），依嚴重度取前 `keyLimit` 個、再按棋局順序執行。
+- `engine.analyse(fen, { movetime, multiPv })`：`movetime > 0` 時改送 `go movetime`，並在值變動時才送 `setoption name MultiPV`；`parseInfo` 現在保留每個 multipv slot，`Stockfish` 以「每個 slot 取最深」聚合，結果的 `lines` 依 multipv 排序（slot 1 仍驅動 headline 評估）。Worker 重置後 MultiPV 回到 1。
+- `deepLines(move, result, { movetime })` 把 MultiPV 結果轉成候選著：每條線都用 `beforeFen` 正規化成白方視角、重播成 SAN，`lossCp` 是走子方相對引擎第一選擇的損失，`playedRank` 說明實戰著是第幾候選（不在名單內為 `null`）。寫回 `ReviewMove.deep`，不覆蓋第一階段數字。
+- `candidateLines()`（`src/navigation.js`）是 UI 取用變例的唯一入口：有 `deep` 時列出 MultiPV 候選，否則只有主變例。變例選取改為 `{ key, step }`，`variationView()` 會 clamp 步數並在 key 不存在時退回第一條線。
+
 重要：介面已可操作（真棋子、回放、曲線跳轉、變例預覽），但策略旁白、關鍵點重分析與離線打包仍未完成，尚不是可交付的完整產品。
 
 ## 3. 啟動、建置與品質檢查
@@ -126,9 +134,10 @@ new Worker
   → uci → 等 uciok
   → setoption name UCI_ShowWDL value true
   → isready → 等 readyok
+  → setoption name MultiPV value <N>（只在值改變時送）
   → position fen <FEN>
   → go depth <N> 或 go movetime <ms>
-  → 收集最新且最深的 info ... score ... pv ...
+  → 收集每個 multipv slot 最新且最深的 info ... score ... pv ...
   → bestmove ...（本次分析完成）
 ```
 
@@ -243,10 +252,11 @@ game           已成功驗證的 ParsedGame
 analysisRun    { id, controller }（ref，不進 render 狀態）
 analysisByPly  Record<ply, ReviewMove>，可部分完成
 selectedPly    棋盤、曲線、走子清單與旁白共享的唯一選取位置（0 = 初始局面）
-variationIndex null = 看實戰；數字 = 預覽引擎主變例第 N 步
+variation      null = 看實戰；`{ key, step }` = 預覽候選線 key 的第 step 步
 orientation    'w' | 'b' 棋盤視角
 playing        自動回放開關
-settings       深度／時間、使用者執子顏色（未來）
+modeKey        'fast' | 'balanced' | 'deep'（對應 `ANALYSIS_MODES`）
+progress       { phase: 'scan' | 'deep', current, total }
 ```
 
 不要把棋盤位置各自存在圖表、走子清單、旁白元件；所有互動都應寫回唯一的 `selectedPly`（App 的 `selectPly()` 同時清掉 `variationIndex`，避免變例殘留到下一手）。棋盤 FEN 一律由 `interactiveBoard()` 從資料模型推導。
@@ -260,8 +270,8 @@ settings       深度／時間、使用者執子顏色（未來）
 5. [完成於 `feature/review-data`] `App.jsx` 已改為 `ParsedGame + analysisByPly + selectedPly`（`selectedPly = 0` 為初始局面）；集中化 `CLASSIFICATION_THRESHOLDS`，加入 `summarize()` 全局摘要與 `confirmed`／`inferred` 分離的 `commentary`。
 6. [完成於 `feature/interactive-board`] 原創 SVG 棋子、`boardView`／`interactiveBoard` 推導、走子清單配對、前後步＋播放＋鍵盤、曲線點跳轉、主變例逐步預覽，全部共用 `selectedPly`；新增 `npm run preview:ui` 視覺檢查。
 7. [完成於 `feature/commentary`] `src/facts.js` 盤面事實 + `src/commentary.js` 規則式推論，寫入 `commentary.inferred` 並在 UI 標示為非引擎結論。
-8. **下一步：**需求文件 §7 的「深入模式」——在 `feature/analysis-core` 系列分支擴充引擎層：關鍵點（大失誤／評估劇變）以較長 movetime 或 MultiPV 重跑，並讓 `parseInfo` 收集 multipv > 1 的候選著。
-9. 最後才做 `feature/pwa-packaging`（離線快取、PWA、可選 Tauri）與 GitHub Actions。
+8. [完成於 `feature/deep-analysis`] 深入模式：`ANALYSIS_MODES` 時間預算、`keyPlies()` 關鍵點挑選、`go movetime` 與 MultiPV 聚合、`deepLines()` 候選著與可預覽的多變例。
+9. **下一步：**`feature/pwa-packaging`——PWA manifest／圖示、離線快取（確認斷網後可啟動並分析）、GitHub Actions（install／test／build），再評估可選的 Tauri 包裝。
 
 每一步完成時，更新本手冊的「目前技術基線」和需求文件對應 phase checkbox，並在回覆中列出執行過的驗證命令與結果。
 
@@ -269,12 +279,12 @@ settings       深度／時間、使用者執子顏色（未來）
 
 ```md
 ## 交接摘要
-- 完成：`main` 已有可取消的本機 Stockfish 分析核心、完整 `ReviewMove` 資料契約，以及 Chess.com 式互動檢討介面（原創 SVG 棋子、高亮、翻轉、回放、鍵盤、曲線跳轉、走子清單、主變例預覽）。`feature/commentary` 新增 `src/facts.js`（可查證盤面事實）與 `src/commentary.js`（規則式推論最多 3 句、每句附數字依據），UI 以獨立區塊標示「規則式推論（非引擎結論）」。
-- 未完成：需求 §7 的深入模式（關鍵點以較長 movetime／MultiPV 重跑）、MultiPV 解析、PWA／離線快取／Tauri、GitHub Actions、IndexedDB 保存（目前刻意不存）、本機 LLM 後處理（可選、非 MVP）。
-- 目前 branch：`feature/commentary`（已可驗證，待合併）。
-- 最近一次驗證：`npm test`（34 passed / 0 failed）、`npm run build`、`npm run preview:ui` 並實際檢視旁白區塊與棋盤；接手前務必重跑。
-- 已知限制：規則式推論只看單一局面的靜態特徵，沒有做 SEE 或戰術搜尋，可能漏掉需要算變化才看得出的威脅（因此句子一律標為推論並附數字）；深度仍是固定 depth 選項；變例只有主變例。
-- 下一步（唯一最高優先）：合併 `feature/commentary` 後，依需求 §7 實作深入模式——對大失誤與評估劇變的 ply 以較長思考時間／MultiPV 重分析，並在 UI 呈現多條替代變例。
+- 完成：`main` 已有分析核心、`ReviewMove` 資料契約、互動檢討介面與規則式旁白。`feature/deep-analysis` 新增需求 §7 的深入模式：`ANALYSIS_MODES` 三檔預算、關鍵點（失誤或期望得分變動 ≥ 10 點）以 `go movetime` + MultiPV 重跑、`deepLines()` 產生可預覽的候選著（含相對首選的失分與實戰著排名）。
+- 未完成：PWA／離線快取／Tauri、GitHub Actions、IndexedDB 保存（刻意不存）、本機 LLM 後處理（可選）、棋盤箭頭標註、「我執白／執黑」的個人化摘要。
+- 目前 branch：`feature/deep-analysis`（已可驗證，待合併）。
+- 最近一次驗證：`npm test`（40 passed / 0 failed）、`npm run build`、`npm run preview:ui` 並截圖確認候選著清單；接手前務必重跑。注意：MultiPV 與 movetime 只在 FakeWorker 測過協定序列，尚未在瀏覽器實測真實引擎的深入模式耗時。
+- 已知限制：關鍵點門檻與時間預算是初版猜測值，需實測校準；候選著只列 MultiPV 前 N 條，沒有做候選著之間的戰術說明；規則式推論仍只看靜態特徵。
+- 下一步（唯一最高優先）：合併 `feature/deep-analysis` 後開 `feature/pwa-packaging`，完成 PWA manifest／離線快取與 GitHub Actions，並以斷網環境驗證建置成果。
 ```
 
 ## 9. GitHub 準備清單
