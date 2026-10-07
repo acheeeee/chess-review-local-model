@@ -58,18 +58,22 @@ git push -u origin feature/<scope>
 
 | 位置 | 用途 |
 | --- | --- |
-| `src/App.jsx` | 頁面狀態（`game` / `analysisByPly` / `selectedPly`）、PGN 輸入、分析流程、結果呈現 |
+| `src/App.jsx` | 頁面狀態（`game` / `analysisByPly` / `selectedPly` / `variationIndex` / `orientation` / `playing`）、PGN 輸入、分析流程、結果呈現 |
 | `src/engine.js` | Web Worker 中 Stockfish 的 UCI 訊息佇列 |
 | `src/review.js` | PGN、`ReviewMove` 契約、ply 索引、評估、分類、摘要與講評的純函式 |
+| `src/navigation.js` | 棋盤格子推導、前後步、走子清單列、變例預覽的純函式 |
+| `src/pieces.jsx` | 本專案原創的 SVG 棋子圖示（無第三方素材、無網路請求） |
 | `src/styles.css` | 介面樣式 |
 | `vite.config.js` | 開發／打包時供應 Stockfish JS + WASM 檔案 |
+| `tools/visual-preview.jsx`／`.mjs` | `npm run preview:ui`：用假引擎結果靜態渲染真實元件，輸出 `preview/review-ui.html` 供視覺檢查 |
 | `docs/requirements-and-execution-plan.md` | 已確認需求、非目標與 phases |
 | `test/engine.test.js` | Fake Worker 下的 UCI queue、cp 0、MultiPV 與取消測試 |
 | `test/review.test.js` | 評分視角、WDL、終局、PGN、分類邊界、ply 0 契約、`analysisByPly` 與棋規邊界測試 |
+| `test/navigation.test.js` | 棋盤格色／翻轉／高亮、步進邊界、走子清單配對、變例預覽測試 |
 
 已整合的 `feature/analysis-core`：單 Worker FIFO queue、AbortSignal 取消、Worker 錯誤重置、將殺／逼和的明確表示，以及 `npm test` 基礎測試。
 
-`feature/review-data` 目前狀態（尚未合併）：
+`feature/review-data`（已合併 `main`）確立的資料契約：
 
 - `readPgn()` 輸出 `ParsedGame` = `{ headers, initialFen, moves, lastPly }`；`moves` 是含 `ply`、真實 `fullmove`、`beforeFen`、`afterFen`、`flags` 的 `GameMove`。
 - `buildReviewMove({ move, best, after })` 是唯一產生 `ReviewMove` 的地方，輸出 §5 契約欄位（含 `bestWhiteCp`／`afterWhiteCp`／`lossCp`／`classification`／`whiteWinChance`／`commentary`）。`after` 可直接收 `terminalEvaluation()` 結果，終局不會被捏造成 cp 值；mate 時 `afterWhiteCp` 為 `null`。
@@ -82,7 +86,16 @@ git push -u origin feature/<scope>
 - `makeCommentary()` 把講評拆成 `confirmed`（引擎數值與盤面事實：子力差變化、將軍、終局）與 `inferred`（目前刻意留空），避免把規則式推論當成引擎結論。
 - `replayPv()` 仍將 UCI 主變例逐著轉 SAN 並保留每一步 FEN。
 
-重要：目前 UI 仍是概念雛形，不得因為能顯示畫面就視為可交付產品。互動棋盤、回放與變例檢視尚未實作。
+`feature/interactive-board` 新增的互動層（全部建立在 `selectedPly` 之上）：
+
+- `boardView(fen, { orientation, lastMove, suggestion })` 產生 64 格的顯示順序資料：格色（a1 為深色）、座標標籤、實戰著起訖與引擎建議起訖分開標記。棋盤元件只負責畫，不自行算位置。
+- `interactiveBoard()` 是棋盤的唯一推導入口：無變例時顯示實戰局面並只標實戰著；`variationIndex` 有值時改顯示引擎主變例局面，且以「建議」配色標記，介面必須同時顯示「變例預覽」標籤。實戰盤面永遠不會把建議著畫成好像發生過。
+- `stepPly()`／`canStep()` 把前後步、⏮／⏭、鍵盤 ←／→／Home／End 與自動播放限制在 `0..lastPly`。
+- `moveRows()` 以 fullmove 配對白黑；黑先開局（`[FEN]` 起始）不會錯位，未分析的手仍有可點選的格子。
+- 播放是 `playing` 狀態 + `setTimeout`（`PLAYBACK_MS`），到最後一手自動停止；任何手動操作都會停止播放。
+- 棋子是 `src/pieces.jsx` 的原創 SVG；國王、主教、皇后外形刻意區分（已用視覺預覽確認），黑子的十字／切口以淺色描邊維持對比。
+
+重要：介面已可操作（真棋子、回放、曲線跳轉、變例預覽），但策略旁白、關鍵點重分析與離線打包仍未完成，尚不是可交付的完整產品。
 
 ## 3. 啟動、建置與品質檢查
 
@@ -92,12 +105,14 @@ npm run dev
 npm test
 npm run build
 npm run preview
+npm run preview:ui   # 靜態介面預覽，不需要引擎
 ```
 
 - 開發模式應使用 `http://localhost`；直接雙擊 `index.html` 不會正確載入 Worker／WASM。
 - `npm test` 是最低限度的核心回歸測試；`npm run build` 必須將 lite single-thread Stockfish JS 與 WASM 一併輸出。
+- 改到棋盤、棋子或走子清單樣式時，跑 `npm run preview:ui` 並實際看一遍 `preview/review-ui.html`（含桌面與約 500px 窄寬度）；`preview/` 已被 git 忽略。
 - 不應以 CDN 載入引擎、字型或核心功能依賴。若保留外部字型，必須有本機系統字型 fallback；正式離線版應移除外部字型請求。
-- 不要提交 `node_modules`、`dist`、使用者 PGN 或含個資的螢幕截圖。
+- 不要提交 `node_modules`、`dist`、`preview`、使用者 PGN 或含個資的螢幕截圖。
 
 ## 4. 引擎與 UCI 協定
 
@@ -205,15 +220,18 @@ Stockfish 的 `score cp`／`score mate`／`wdl` 是**該 FEN 輪到走的一方�
 最少維護以下獨立狀態：
 
 ```text
-draftPgn       使用者正在編輯的 PGN
-parsedGame     已成功驗證的棋局
-analysisRun    { id, status, progress, abortController }
-review[]       已完成或逐步完成的 ReviewMove
-selectedPly    當前棋盤、走子清單與旁白共享的選取位置
+pgn            使用者正在編輯的 PGN
+game           已成功驗證的 ParsedGame
+analysisRun    { id, controller }（ref，不進 render 狀態）
+analysisByPly  Record<ply, ReviewMove>，可部分完成
+selectedPly    棋盤、曲線、走子清單與旁白共享的唯一選取位置（0 = 初始局面）
+variationIndex null = 看實戰；數字 = 預覽引擎主變例第 N 步
+orientation    'w' | 'b' 棋盤視角
+playing        自動回放開關
 settings       深度／時間、使用者執子顏色（未來）
 ```
 
-不要把棋盤位置各自存在圖表、走子清單、旁白元件；所有互動都應寫回唯一的 `selectedPly`。棋盤 FEN 從資料模型推導。
+不要把棋盤位置各自存在圖表、走子清單、旁白元件；所有互動都應寫回唯一的 `selectedPly`（App 的 `selectPly()` 同時清掉 `variationIndex`，避免變例殘留到下一手）。棋盤 FEN 一律由 `interactiveBoard()` 從資料模型推導。
 
 ## 8. 建議的下一位模型工作順序
 
@@ -221,9 +239,10 @@ settings       深度／時間、使用者執子顏色（未來）
 2. [完成於 `feature/analysis-core`] 單一 UCI Worker 的 FIFO queue、取消、run ID 與錯誤復原。
 3. [完成基礎版] `node:test` 針對 engine／review pure functions；`feature/review-data` 已補上 ply 0、`analysisByPly`、黑方失誤與棋規邊界（將死、升變、易位、en passant、非法 PGN、自訂起始 FEN）fixtures。
 4. [完成於 `feature/review-data`] `GameMove`／`ParsedGame` 統一為 `beforeFen`／`afterFen`，PV 逐手重播成 SAN。
-5. [完成於 `feature/review-data`] `App.jsx` 已改為 `ParsedGame + analysisByPly + selectedPly`（`selectedPly = 0` 為初始局面）；集中化 `CLASSIFICATION_THRESHOLDS`，加入 `summarize()` 全局摘要與 `confirmed`／`inferred` 分離的 `commentary`。本分支刻意不加播放 UI。
-6. **下一步：**將此資料分支合併到 `main` 後，另開 `feature/interactive-board`：真正的棋盤元件與棋子圖示、走子清單、前後步與播放、曲線跳轉，全部只透過唯一的 `selectedPly` 互動；同時補上主變例檢視。
-7. 最後才加策略旁白（填入 `commentary.inferred`）、PWA 和 Tauri。
+5. [完成於 `feature/review-data`] `App.jsx` 已改為 `ParsedGame + analysisByPly + selectedPly`（`selectedPly = 0` 為初始局面）；集中化 `CLASSIFICATION_THRESHOLDS`，加入 `summarize()` 全局摘要與 `confirmed`／`inferred` 分離的 `commentary`。
+6. [完成於 `feature/interactive-board`] 原創 SVG 棋子、`boardView`／`interactiveBoard` 推導、走子清單配對、前後步＋播放＋鍵盤、曲線點跳轉、主變例逐步預覽，全部共用 `selectedPly`；新增 `npm run preview:ui` 視覺檢查。
+7. **下一步：**`feature/commentary`——用 `src/navigation.js`／`review.js` 已有的盤面事實產生規則式策略訊號，寫進 `commentary.inferred` 並標示為推論；同時評估需求文件 §7 的「關鍵點以較長時間／MultiPV 重跑」。
+8. 最後才做 `feature/pwa-packaging`（離線快取、PWA、可選 Tauri）與 GitHub Actions。
 
 每一步完成時，更新本手冊的「目前技術基線」和需求文件對應 phase checkbox，並在回覆中列出執行過的驗證命令與結果。
 
@@ -231,12 +250,12 @@ settings       深度／時間、使用者執子顏色（未來）
 
 ```md
 ## 交接摘要
-- 完成：`main` 已有可取消的本機 Stockfish 分析核心；`feature/review-data` 已完成 `ReviewMove` 資料契約——以 ply 索引的 `analysisByPly`、`selectedPly = 0` 初始局面、集中化失誤門檻、`summarize()` 全局摘要、`confirmed`／`inferred` 分離的 commentary，以及棋規邊界測試。
-- 未完成：沒有真正的互動棋盤／回放 UI、沒有主變例檢視、沒有策略旁白（`commentary.inferred` 仍為空）、沒有 PWA／Tauri 包裝、沒有 MultiPV 與關鍵點重分析。
-- 目前 branch：`feature/review-data`（已可驗證，待合併到 `main`；勿直接在 main 修改）。
-- 最近一次驗證：`npm test`（16 passed / 0 failed）與 `npm run build` 皆通過；接手前務必重跑。
-- 已知限制：UI 仍是概念雛形（純文字棋子、無播放）；曲線只畫到第一個未分析的 ply；「勝率」實際上是 WDL 期望得分，文案已改為「白方期望得分（引擎估計）」；深度選項仍是固定 depth，未實作需求文件 §7 的關鍵點時間分配。
-- 下一步（唯一最高優先）：把 `feature/review-data` 合併進 `main`，再開 `feature/interactive-board`，讓棋盤、走子清單與曲線共用唯一的 `selectedPly`。
+- 完成：`main` 已有可取消的本機 Stockfish 分析核心與完整 `ReviewMove` 資料契約；`feature/interactive-board` 完成 Chess.com 式互動檢討介面：原創 SVG 棋子、實戰著高亮、棋盤翻轉、⏮◀▶⏭ 與自動播放、鍵盤 ←／→／Home／End、曲線節點跳轉、白黑配對走子清單（未分析的手也可點）、主變例逐步預覽與「回到實戰」。
+- 未完成：策略旁白（`commentary.inferred` 仍為空）、關鍵點重分析與 MultiPV、PWA／離線快取／Tauri、GitHub Actions、IndexedDB 保存（目前刻意不存）。
+- 目前 branch：`feature/interactive-board`（已可驗證，待合併）。
+- 最近一次驗證：`npm test`（24 passed / 0 failed）、`npm run build`、`npm run preview:ui` 並以 1240px 與 500px 寬實際檢視畫面；接手前務必重跑。
+- 已知限制：深度仍是固定 depth 選項，未實作需求 §7 的關鍵點時間分配；「勝率」是 WDL 期望得分（UI 已標示）；變例預覽只走主變例，沒有多變例比較；棋子為自繪 SVG，風格比商業棋盤樸素。
+- 下一步（唯一最高優先）：合併 `feature/interactive-board` 後開 `feature/commentary`，以可驗證的盤面事實產生規則式策略旁白，寫入 `commentary.inferred` 並標示為推論。
 ```
 
 ## 9. GitHub 準備清單
