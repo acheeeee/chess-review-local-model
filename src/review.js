@@ -27,14 +27,58 @@ export function moveFromUci(fen, uci) {
   } catch { return uci; }
 }
 
-export function scoreToWhiteCp(result) {
-  if (result.mate !== null) return Math.sign(result.mate || 1) * (100000 - Math.min(999, Math.abs(result.mate)) * 100);
-  return result.cp ?? 0;
+/**
+ * UCI scores and WDL are from the perspective of the side to move in `fen`.
+ * This function is the only place that translates them to the app-wide white
+ * perspective; callers must never flip a score again based on move colour.
+ */
+export function normalizeEvaluation(result, fen) {
+  const multiplier = new Chess(fen).turn() === 'w' ? 1 : -1;
+  const score = result.mate !== null
+    ? { kind: 'mate', value: result.mate * multiplier }
+    : { kind: 'cp', value: (result.cp ?? 0) * multiplier };
+  const wdl = result.wdl ? (multiplier === 1 ? result.wdl : [result.wdl[2], result.wdl[1], result.wdl[0]]) : null;
+  return { ...result, score, wdl };
 }
 
-export function whiteWinChance(whiteCp) {
-  // Smooth centipawn-to-expected-score conversion, intentionally conservative.
-  return 100 / (1 + Math.exp(-whiteCp / 260));
+export function terminalEvaluation(fen) {
+  const position = new Chess(fen);
+  if (position.isCheckmate()) {
+    // The side to move is checkmated. A value of ±1 means mate in the current
+    // position; it is deliberately kept separate from centipawn evaluations.
+    return { score: { kind: 'mate', value: position.turn() === 'w' ? -1 : 1 }, wdl: null, terminal: 'checkmate' };
+  }
+  if (position.isDraw()) return { score: { kind: 'cp', value: 0 }, wdl: [0, 1000, 0], terminal: 'draw' };
+  return null;
+}
+
+/** A private ranking scale for classification; never render this as a cp score. */
+export function comparableWhiteCp(evaluation) {
+  const { score } = evaluation;
+  if (score.kind === 'cp') return score.value;
+  return Math.sign(score.value || 1) * (100000 - Math.min(999, Math.abs(score.value)) * 100);
+}
+
+export function lossCp(best, actual, moveColor) {
+  const difference = comparableWhiteCp(best) - comparableWhiteCp(actual);
+  return Math.max(0, moveColor === 'w' ? difference : -difference);
+}
+
+export function formatEvaluation(evaluation) {
+  if (evaluation.score.kind === 'mate') return evaluation.score.value > 0 ? `#${evaluation.score.value}` : `-#${Math.abs(evaluation.score.value)}`;
+  const value = evaluation.score.value / 100;
+  return `${value >= 0 ? '+' : ''}${value.toFixed(2)}`;
+}
+
+export function whiteWinChance(evaluation) {
+  if (evaluation.score.kind === 'mate') return evaluation.score.value > 0 ? 100 : 0;
+  if (evaluation.wdl) {
+    const total = evaluation.wdl.reduce((sum, part) => sum + part, 0);
+    // A drawn game is worth half a point. This is the expected score shown by
+    // common chess review UIs and avoids treating a near-certain draw as 0%.
+    if (total > 0) return ((evaluation.wdl[0] + evaluation.wdl[1] / 2) / total) * 100;
+  }
+  return 100 / (1 + Math.exp(-evaluation.score.value / 260));
 }
 
 export function classify(loss) {
@@ -45,16 +89,10 @@ export function classify(loss) {
   return { label: '大失誤', tone: 'blunder' };
 }
 
-function formatEval(whiteCp) {
-  if (Math.abs(whiteCp) > 90000) return whiteCp > 0 ? '白方將殺優勢' : '黑方將殺優勢';
-  const sign = whiteCp > 0 ? '+' : '';
-  return `${sign}${(whiteCp / 100).toFixed(2)}（白方）`;
-}
-
 export function makeInsight(item) {
   const side = item.color === 'w' ? '白方' : '黑方';
-  const direction = item.afterWhiteCp >= 0 ? '白方' : '黑方';
-  if (item.classification.tone === 'best') return `${side}下出接近引擎首選的 ${item.san}。局面評估為 ${formatEval(item.afterWhiteCp)}，${direction}稍佔優勢。`;
-  const drop = (item.loss / 100).toFixed(2);
-  return `${side}的 ${item.san} 讓局面少了約 ${drop} 兵的評估；引擎偏好 ${item.bestSan}。走後評估 ${formatEval(item.afterWhiteCp)}，勝率明顯往${direction}傾斜。`;
+  const direction = item.afterEvaluation.score.value >= 0 ? '白方' : '黑方';
+  if (item.classification.tone === 'best') return `${side}下出接近引擎首選的 ${item.san}。局面評估為 ${formatEvaluation(item.afterEvaluation)}，${direction}稍佔優勢。`;
+  const drop = (item.lossCp / 100).toFixed(2);
+  return `${side}的 ${item.san} 讓局面少了約 ${drop} 兵的評估；引擎偏好 ${item.bestSan}。走後評估 ${formatEvaluation(item.afterEvaluation)}，勝率明顯往${direction}傾斜。`;
 }
